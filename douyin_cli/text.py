@@ -1,0 +1,231 @@
+import random
+import re
+import time
+from pathlib import Path
+
+import niquests as requests
+import ujson as json
+from loguru import logger
+
+from .exceptions import CrawlerError
+
+FILENAME_FIELDS_MAP = {
+    "id": "id",
+    "title": "desc",
+    "author": "author_nickname",
+    "date": "_date",
+    "type": "_type",
+    "duration": "_duration",
+    "music": "music_title",
+    "no": "no",
+}
+
+
+def generate_filename(
+    item: dict,
+    fields: list[str] | None = None,
+    separator: str = "_",
+) -> str:
+    if not fields:
+        fields = ["id", "title"]
+
+    parts = []
+    for field in fields:
+        value = _resolve_field(item, field)
+        if value:
+            parts.append(str(value))
+
+    if not parts:
+        return str(item.get("id", "unknown"))
+
+    filename = separator.join(parts)
+    return sanitize_filename(filename, max_bytes=200)
+
+
+def _resolve_field(item: dict, field: str) -> str:
+    if field not in FILENAME_FIELDS_MAP:
+        return ""
+
+    mapped = FILENAME_FIELDS_MAP[field]
+
+    if mapped.startswith("_"):
+        if mapped == "_date":
+            ts = item.get("time")
+            if ts:
+                try:
+                    return time.strftime("%Y-%m-%d", time.localtime(ts))
+                except Exception:
+                    return ""
+            return ""
+        if mapped == "_type":
+            aweme_type = item.get("type", 4)
+            if aweme_type == 68:
+                return "图文"
+            return "视频"
+        if mapped == "_duration":
+            duration = item.get("duration")
+            if duration:
+                try:
+                    seconds = int(duration) // 1000
+                    m = seconds // 60
+                    s = seconds % 60
+                    return f"{m:02d}-{s:02d}"
+                except Exception:
+                    return ""
+            return ""
+
+    value = item.get(mapped, "")
+    if value is None:
+        return ""
+    return str(value)
+
+
+def gen_random_str(length: int = 16, lower: bool = False) -> str:
+    """生成随机字符串"""
+    chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+    if lower:
+        chars = chars.lower()
+    return "".join(random.choice(chars) for _ in range(length))
+
+
+def get_timestamp(type: str = "ms") -> str:
+    """获取当前时间戳（毫秒）"""
+    if type == "ms":
+        return str(int(time.time() * 1000))
+    if type == "s":
+        return str(int(time.time()))
+    raise ValueError("只支持 'ms' 或 's'（毫秒或秒）")
+
+
+def extract_valid_urls(input_data: str | list[str]) -> str | list[str] | None:
+    """提取有效的URL
+
+    Args:
+        input_data: 字符串或字符串列表
+
+    Returns:
+        提取的URL或URL列表
+
+    """
+    url_pattern = re.compile(r"https?://[^\s]+")
+
+    if isinstance(input_data, str):
+        match = url_pattern.search(input_data)
+        return match.group(0) if match else input_data
+    if isinstance(input_data, list):
+        return [extract_valid_urls(item) for item in input_data if item]
+    return None
+
+
+def sanitize_filename(
+    text: str,
+    max_bytes: int = 100,
+    add_ellipsis: bool = True,
+) -> str:
+    """生成安全的文件名
+
+    Args:
+        text: 原始文本
+        max_bytes: 最大字节数（默认 100，考虑中文字符）
+        add_ellipsis: 超长时是否添加省略号
+
+    Returns:
+        安全的文件名字符串
+
+    """
+    if not text or not isinstance(text, str):
+        return "无标题"
+
+    text = text.strip()
+    if not text:
+        return "无标题"
+
+    # 过滤特殊字符
+    # Windows 文件名禁止字符: < > : " / \ | ? *
+    # 同时移除控制字符
+    # illegal_chars = ["\r", "\n", "\\", "/", ":", "*", "?", '"', "<", ">", "|"]
+    safe_text = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", text)
+
+    # 替换多个空格为单个空格
+    safe_text = re.sub(r"\s+", " ", safe_text).strip()
+
+    if not safe_text:
+        return "无标题"
+
+    # 按字节限制长度（考虑中文字符）
+    if len(safe_text.encode("utf-8")) > max_bytes:
+        ellipsis_bytes = 3 if add_ellipsis else 0
+        safe_text_bytes = safe_text.encode("utf-8")[: max_bytes - ellipsis_bytes]
+        safe_text = safe_text_bytes.decode("utf-8", errors="ignore").strip()
+        if safe_text and add_ellipsis:
+            safe_text = safe_text + "..."
+
+    return safe_text or "无标题"
+
+
+def abort(message: str = ""):
+    """抛出业务异常（适用于GUI应用）"""
+    if message:
+        logger.error(message)
+    raise CrawlerError(message or "程序异常退出")
+
+
+def url_redirect(url: str) -> str:
+    """获取URL的最终重定向地址
+
+    Args:
+        url: 原始URL
+
+    Returns:
+        最终重定向的URL，失败时返回原URL
+
+    """
+    try:
+        r = requests.head(url, allow_redirects=True, timeout=10)
+        return r.url
+    except Exception as e:
+        logger.debug(f"URL重定向检测失败: {url}, 错误: {e}")
+        return url
+
+
+def save_json(filename: str, data: dict) -> None:
+    """保存字典为JSON文件
+
+    Args:
+        filename: 文件名（包含路径，不含.json后缀）
+        data: 要保存的字典数据
+
+    """
+    file_path = Path(filename)
+    if file_path.parent != Path():
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        with Path(f"{filename}.json").open("w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"保存JSON文件 {filename} 时出错: {e}")
+        raise
+
+
+def load_json(filename: str) -> list[dict] | None:
+    """从JSON文件加载数据
+
+    Args:
+        filename: 文件名（包含路径，不含.json后缀）
+
+    Returns:
+        解析后的数据列表，文件不存在时返回None
+
+    """
+    json_path = Path(f"{filename}.json")
+    if not json_path.exists():
+        return None
+
+    try:
+        with json_path.open(encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else None
+    except Exception as e:
+        logger.error(f"加载JSON文件 {json_path} 时出错: {e}")
+        return None
