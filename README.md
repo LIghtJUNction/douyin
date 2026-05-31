@@ -12,6 +12,7 @@
 - 官方评论列表、评论回复列表、评论回复
 - 企业号私信消息发送
 - 任意官方 OpenAPI 路径请求
+- stdio MCP 服务器，供 MCP 客户端调用抖音 OpenAPI 工具
 - 可选本地字幕生成
 - Obscura/自动化运行时集成
 
@@ -121,6 +122,40 @@ douyin obscura status
 douyin auth status --json
 ```
 
+## MCP 服务器
+
+`douyin mcp` 会通过 stdio 启动 MCP 服务器，默认复用 `douyin auth` 保存的官方 OpenAPI 授权信息。
+
+```bash
+douyin mcp
+```
+
+MCP 客户端配置示例：
+
+```json
+{
+  "mcpServers": {
+    "douyin": {
+      "command": "douyin",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+可用工具包括授权状态、用户信息、评论列表、评论回复、企业号私信发送和通用 OpenAPI 请求。首次使用前先完成授权：
+
+```bash
+douyin auth login \
+  --client-key "$DOUYIN_CLIENT_KEY" \
+  --client-secret "$DOUYIN_CLIENT_SECRET" \
+  --redirect-uri "https://example.com/callback" \
+  --scope user_info
+
+douyin auth code --code "授权码"
+douyin mcp
+```
+
 推荐接入顺序：
 
 ```bash
@@ -185,7 +220,7 @@ douyin api request GET /oauth/userinfo/ \
 
 ```bash
 douyin subtitle video.mp4 --language zh
-douyin subtitle video.mp4 --model small --format srt
+douyin subtitle video.mp4 --model Qwen/Qwen3-ASR-1.7B --format srt
 ```
 
 首次使用模型时会自动从 Hugging Face 下载。CUDA 模式需要 CUDA 12 运行库；如果系统只提供 CUDA 13，可安装 `douyin-cli[subtitle-cuda]`，或使用 CPU 模式：
@@ -201,7 +236,7 @@ uv tool install 'douyin-cli[subtitle-mac]'
 douyin subtitle video.mp4 --backend mlx-whisper --language zh
 ```
 
-`--backend auto` 会在 macOS arm64 上优先使用 `mlx-whisper`，其他平台默认使用 `faster-whisper`。`--device` 和 `--compute-type` 只影响 `faster-whisper` 后端。
+`--backend auto` 会在 macOS arm64 上优先使用 `mlx-whisper`，其他平台默认使用 `qwen-asr` 和 `Qwen/Qwen3-ASR-1.7B`。如需旧的 Whisper 路径，可显式使用 `--backend faster-whisper --model Systran/faster-whisper-small`。`--compute-type` 只影响 `faster-whisper` 后端。
 
 ## 环境变量
 
@@ -213,5 +248,6 @@ douyin subtitle video.mp4 --backend mlx-whisper --language zh
 
 - Python 3.13
 - Click
+- MCP Python SDK
 - niquests
 - uv / uv-build

@@ -136,9 +136,42 @@ douyin api request POST /item/comment/reply/ \
   --json '{"item_id":"xxx","comment_id":"xxx","content":"谢谢反馈"}'
 ```
 
+## MCP 服务器
+
+`douyin mcp` 通过 stdio 启动抖音 MCP 服务器，适合 Claude Desktop、Codex、Claude Code 等 MCP 客户端直接调用抖音开放平台工具。
+
+```bash
+douyin mcp
+```
+
+客户端配置示例：
+
+```json
+{
+  "mcpServers": {
+    "douyin": {
+      "command": "douyin",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+服务器默认读取 `douyin auth` 保存的 `access_token` 和 `open_id`。如果工具调用参数里显式传入 `token` 或 `open_id`，会优先使用传入值。
+
+当前 MCP 工具：
+
+- `auth_status`：查看本机保存的授权状态
+- `userinfo`：获取授权用户信息
+- `comment_list`：获取视频评论列表
+- `comment_replies`：获取评论回复列表
+- `comment_reply`：回复视频或评论
+- `im_message_send`：发送企业号私信消息
+- `openapi_request`：调用任意官方 OpenAPI 路径
+
 ## 本地字幕
 
-字幕功能基于 `faster-whisper`，从本地视频或音频生成字幕文件。该依赖较重，不随默认安装启用。
+字幕功能默认基于 `Qwen/Qwen3-ASR-1.7B`，从本地视频或音频生成字幕文件。该依赖较重，不随默认安装启用。
 
 ```bash
 uv tool install 'douyin-cli[subtitle]'
@@ -162,8 +195,16 @@ douyin subtitle *.mp4 --output subtitles/
 
 ```bash
 douyin subtitle video.mp4 \
-  --model Systran/faster-whisper-small \
+  --model Qwen/Qwen3-ASR-1.7B \
   --model-cache-dir ~/.cache/douyin-cli/models
+```
+
+如果需要继续使用 Whisper 后端，可显式指定：
+
+```bash
+douyin subtitle video.mp4 \
+  --backend faster-whisper \
+  --model Systran/faster-whisper-small
 ```
 
 不用 CUDA 时：

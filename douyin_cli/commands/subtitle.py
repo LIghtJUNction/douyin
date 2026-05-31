@@ -7,6 +7,7 @@ from pathlib import Path
 import click
 
 from douyin_cli.subtitles import (
+    DEFAULT_QWEN_ASR_MODEL,
     SubtitleDependencyError,
     SubtitleOptions,
     resolve_output_path,
@@ -43,18 +44,21 @@ from douyin_cli.subtitles import (
 )
 @click.option(
     "--model",
-    default="small",
+    default=DEFAULT_QWEN_ASR_MODEL,
     show_default=True,
-    help="Whisper 模型名称或路径",
+    help="ASR 模型名称或路径",
 )
 @click.option("--language", help="语言代码，例如 zh/en；不传则自动识别")
 @click.option(
     "--backend",
-    type=click.Choice(["auto", "faster-whisper", "mlx-whisper"], case_sensitive=False),
+    type=click.Choice(
+        ["auto", "qwen-asr", "faster-whisper", "mlx-whisper"],
+        case_sensitive=False,
+    ),
     default="auto",
     show_default=True,
     help=(
-        "识别后端: auto/faster-whisper/mlx-whisper；"
+        "识别后端: auto/qwen-asr/faster-whisper/mlx-whisper；"
         "macOS Apple Silicon 默认使用 mlx-whisper"
     ),
 )
@@ -62,7 +66,7 @@ from douyin_cli.subtitles import (
     "--device",
     default="auto",
     show_default=True,
-    help="faster-whisper 运行设备: auto/cpu/cuda",
+    help="运行设备: auto/cpu/cuda；mlx-whisper 会忽略此选项",
 )
 @click.option(
     "--compute-type",

@@ -10,6 +10,7 @@ from douyin_cli.subtitles import (
     render_vtt,
     resolve_mlx_model,
     resolve_output_path,
+    resolve_qwen_device_map,
     resolve_subtitle_backend,
 )
 
@@ -62,6 +63,7 @@ def test_is_cuda_link_error_detects_missing_cublas() -> None:
 
 
 def test_resolve_subtitle_backend_keeps_explicit_backend() -> None:
+    assert resolve_subtitle_backend("qwen-asr") == "qwen-asr"
     assert resolve_subtitle_backend("faster-whisper") == "faster-whisper"
     assert resolve_subtitle_backend("mlx-whisper") == "mlx-whisper"
 
@@ -71,6 +73,25 @@ def test_resolve_subtitle_backend_uses_mlx_on_apple_silicon(monkeypatch) -> None
     monkeypatch.setattr(platform, "machine", lambda: "arm64")
 
     assert resolve_subtitle_backend("auto") == "mlx-whisper"
+
+
+def test_resolve_subtitle_backend_uses_qwen_asr_by_default(monkeypatch) -> None:
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    monkeypatch.setattr(platform, "machine", lambda: "x86_64")
+
+    assert resolve_subtitle_backend("auto") == "qwen-asr"
+
+
+def test_resolve_qwen_device_map_uses_cuda_when_available() -> None:
+    class Torch:
+        class cuda:
+            @staticmethod
+            def is_available() -> bool:
+                return True
+
+    assert resolve_qwen_device_map("auto", Torch) == "cuda:0"
+    assert resolve_qwen_device_map("cpu", Torch) == "cpu"
+    assert resolve_qwen_device_map("cuda", Torch) == "cuda:0"
 
 
 def test_resolve_mlx_model_maps_common_whisper_name() -> None:

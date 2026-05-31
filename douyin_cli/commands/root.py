@@ -10,6 +10,7 @@ from douyin_cli.commands.comment import comment
 from douyin_cli.commands.common import APP_VERSION, configure_logging
 from douyin_cli.commands.compat import DEFAULT_DOWNLOAD_DIR, run_crawl
 from douyin_cli.commands.compat import should_run_crawl as should_run_compat
+from douyin_cli.commands.mcp import mcp
 from douyin_cli.commands.obscura import obscura
 from douyin_cli.commands.subtitle import subtitle
 
@@ -168,3 +169,4 @@ main.add_command(auth)
 main.add_command(obscura)
 main.add_command(subtitle)
 main.add_command(comment)
+main.add_command(mcp)
