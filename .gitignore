@@ -1,0 +1,63 @@
+# ==========================
+# 自定义部分
+# ==========================
+下载/
+test.py
+user.*
+cookie.*
+
+# 下载目录中的所有数据文件（保留目录结构）
+download/
+
+# 配置文件和日志（包含用户数据）
+config/*
+!config/.gitkeep
+
+# Aria2 可执行文件（内置到项目，但不提交到git）
+aria2c
+aria2c.exe
+
+# ==========================
+# Python / Pywebview 后端部分
+# ==========================
+
+# Python 编译文件和缓存
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Python 虚拟环境 (根据你的习惯，列出了常见的命名)
+venv/
+.venv/
+env/
+.env
+
+# 构建产物
+/build/
+dist/
+release/
+
+# 本地环境变量
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# ==========================
+# 操作系统 / IDE 通用部分
+# ==========================
+
+# ai IDE 配置
+.trae/
+.kiro/
+
+# VS Code 配置
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# 其它临时文件
+*.log

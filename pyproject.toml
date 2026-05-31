@@ -1,0 +1,100 @@
+[project]
+name = "douyin-cli"
+version = "2026.5.30.2"
+description = "支持抖音开放平台官方 OpenAPI 的命令行工具。"
+readme = "README.md"
+requires-python = ">=3.13"
+license = { text = "AGPL-3.0-or-later" }
+dependencies = [
+    "click>=8.3.1",
+    "exejs>=0.0.7",
+    "loguru>=0.7.3",
+    "niquests>=3.10",
+    "qrcode>=8.2",
+    "ujson>=5.11.0",
+]
+
+authors = [
+    { name = "LIghtJUNction", email = "lightjuncion.me@gmail.com" },
+    { name = "erma0", email = "me@erma0.cn" }, # 原作者，不知道邮箱，https://github.com/erma0
+]
+
+[project.scripts]
+douyin = "douyin_cli.cli:main"
+
+[project.optional-dependencies]
+subtitle = [
+    "faster-whisper>=1.2.1",
+]
+subtitle-cuda = [
+    "faster-whisper>=1.2.1",
+    "nvidia-cublas-cu12>=12.9.2.10",
+    "nvidia-cudnn-cu12>=9.22.0.52",
+]
+subtitle-mac = [
+    "mlx-whisper>=0.4.3; sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.16,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "douyin_cli"
+module-root = ""
+
+[tool.uv.pip]
+index-url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple/"
+default = true
+
+[[tool.uv.index]]
+url = "https://mirrors.aliyun.com/pypi/simple/"
+
+[dependency-groups]
+dev = [
+    "click>=8.3.1",
+    "isort>=7.0.0",
+    "pytest>=9.0.2",
+    "qrcode>=8.2",
+    "ruff>=0.15.14",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "A",
+    "ANN",
+    "BLE001",
+    "C901",
+    "COM812",
+    "D",
+    "EM",
+    "ERA001",
+    "FBT001",
+    "FBT002",
+    "INP001",
+    "N",
+    "PLC0415",
+    "PLR",
+    "PLR0913",
+    "RUF001",
+    "RUF002",
+    "RUF003",
+    "S",
+    "TC",
+    "TID252",
+    "T201",
+    "TRY",
+]
+
+[tool.pytest.ini_options]
+markers = [
+    "network: tests that call external Douyin endpoints",
+]
