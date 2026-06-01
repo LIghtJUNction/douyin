@@ -143,6 +143,22 @@ MCP 客户端配置示例：
 }
 ```
 
+Claude Code 命令行配置：
+
+```bash
+claude mcp add douyin -- douyin mcp
+claude mcp list
+claude mcp get douyin
+```
+
+Codex CLI 命令行配置：
+
+```bash
+codex mcp add douyin -- douyin mcp
+codex mcp list
+codex mcp get douyin
+```
+
 可用工具包括授权状态、用户信息、评论列表、评论回复、企业号私信发送和通用 OpenAPI 请求。首次使用前先完成授权：
 
 ```bash
@@ -220,10 +236,12 @@ douyin api request GET /oauth/userinfo/ \
 
 ```bash
 douyin subtitle video.mp4 --language zh
-douyin subtitle video.mp4 --model Qwen/Qwen3-ASR-1.7B --format srt
+douyin subtitle voice.mp3 --language zh
+douyin subtitle meeting.wav --format txt
+douyin subtitle video.mp4 --model Systran/faster-whisper-small --format srt
 ```
 
-首次使用模型时会自动从 Hugging Face 下载。CUDA 模式需要 CUDA 12 运行库；如果系统只提供 CUDA 13，可安装 `douyin-cli[subtitle-cuda]`，或使用 CPU 模式：
+输入可以是本地视频或音频文件，输出默认写到同名字幕文件，例如 `voice.mp3` 会生成 `voice.srt`。首次使用模型时会自动从 Hugging Face 下载。CUDA 模式需要 CUDA 12 运行库；如果系统只提供 CUDA 13，可安装 `douyin-cli[subtitle-cuda]`，或使用 CPU 模式：
 
 ```bash
 douyin subtitle video.mp4 --device cpu --compute-type int8 --language zh
@@ -232,11 +250,13 @@ douyin subtitle video.mp4 --device cpu --compute-type int8 --language zh
 macOS Apple Silicon 可安装 MLX 后端使用本机 GPU：
 
 ```bash
+uname -m
+# 输出 arm64 时使用 MLX 后端
 uv tool install 'douyin-cli[subtitle-mac]'
 douyin subtitle video.mp4 --backend mlx-whisper --language zh
 ```
 
-`--backend auto` 会在 macOS arm64 上优先使用 `mlx-whisper`，其他平台默认使用 `qwen-asr` 和 `Qwen/Qwen3-ASR-1.7B`。如需旧的 Whisper 路径，可显式使用 `--backend faster-whisper --model Systran/faster-whisper-small`。`--compute-type` 只影响 `faster-whisper` 后端。
+`--backend auto` 会在 macOS arm64 上优先使用 `mlx-whisper`，其他平台默认使用 `faster-whisper` 和 `Systran/faster-whisper-small`。`qwen-asr` 后端仍可显式指定，但其当前发布版本依赖存在安全告警的 `transformers`，不再由 `douyin-cli[subtitle]` 默认安装。`--compute-type` 只影响 `faster-whisper` 后端。
 
 ## 环境变量
 

@@ -26,15 +26,11 @@ douyin = "douyin_cli.cli:main"
 [project.optional-dependencies]
 subtitle = [
     "faster-whisper>=1.2.1",
-    "qwen-asr>=0.0.6",
-    "torch>=2.9.0",
 ]
 subtitle-cuda = [
     "faster-whisper>=1.2.1",
     "nvidia-cublas-cu12>=12.9.2.10",
     "nvidia-cudnn-cu12>=9.22.0.52",
-    "qwen-asr>=0.0.6",
-    "torch>=2.9.0",
 ]
 subtitle-mac = [
     "mlx-whisper>=0.4.3; sys_platform == 'darwin' and platform_machine == 'arm64'",
@@ -62,6 +58,7 @@ url = "https://mirrors.aliyun.com/pypi/simple/"
 dev = [
     "click>=8.3.1",
     "isort>=7.0.0",
+    "pygments>=2.20.0",
     "pytest>=9.0.2",
     "qrcode>=8.2",
     "ruff>=0.15.14",

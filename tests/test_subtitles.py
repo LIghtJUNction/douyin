@@ -1,5 +1,9 @@
 from pathlib import Path
 
+from click.testing import CliRunner
+
+from douyin_cli.cli import main
+from douyin_cli.commands import subtitle as subtitle_command
 from douyin_cli.subtitles import (
     SubtitleSegment,
     default_output_path,
@@ -56,6 +60,44 @@ def test_default_output_path_uses_requested_format() -> None:
     assert default_output_path(Path("video.mp4"), "vtt") == Path("video.vtt")
 
 
+def test_default_output_path_supports_audio_files() -> None:
+    assert default_output_path(Path("voice.mp3"), "srt") == Path("voice.srt")
+    assert default_output_path(Path("meeting.wav"), "vtt") == Path("meeting.vtt")
+
+
+def test_subtitle_command_accepts_audio_file(tmp_path, monkeypatch) -> None:
+    audio_path = tmp_path / "voice.mp3"
+    audio_path.write_bytes(b"audio")
+    captured: dict[str, object] = {}
+
+    def fake_transcribe_media(
+        media_path: Path,
+        options: object,
+    ) -> list[SubtitleSegment]:
+        captured["media_path"] = media_path
+        captured["options"] = options
+        return [SubtitleSegment(start=0, end=1, text="hello")]
+
+    def fake_write_subtitle(
+        segments: list[SubtitleSegment],
+        output_path: Path,
+        output_format: str,
+    ) -> None:
+        captured["segments"] = segments
+        captured["output_path"] = output_path
+        captured["output_format"] = output_format
+
+    monkeypatch.setattr(subtitle_command, "transcribe_media", fake_transcribe_media)
+    monkeypatch.setattr(subtitle_command, "write_subtitle", fake_write_subtitle)
+
+    result = CliRunner().invoke(main, ["subtitle", str(audio_path)])
+
+    assert result.exit_code == 0
+    assert captured["media_path"] == audio_path
+    assert captured["output_path"] == audio_path.with_suffix(".srt")
+    assert captured["output_format"] == "srt"
+
+
 def test_is_cuda_link_error_detects_missing_cublas() -> None:
     error = OSError("libcublas.so.12: cannot open shared object file")
 
@@ -75,11 +117,11 @@ def test_resolve_subtitle_backend_uses_mlx_on_apple_silicon(monkeypatch) -> None
     assert resolve_subtitle_backend("auto") == "mlx-whisper"
 
 
-def test_resolve_subtitle_backend_uses_qwen_asr_by_default(monkeypatch) -> None:
+def test_resolve_subtitle_backend_uses_faster_whisper_by_default(monkeypatch) -> None:
     monkeypatch.setattr(platform, "system", lambda: "Linux")
     monkeypatch.setattr(platform, "machine", lambda: "x86_64")
 
-    assert resolve_subtitle_backend("auto") == "qwen-asr"
+    assert resolve_subtitle_backend("auto") == "faster-whisper"
 
 
 def test_resolve_qwen_device_map_uses_cuda_when_available() -> None:

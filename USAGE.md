@@ -157,6 +157,22 @@ douyin mcp
 }
 ```
 
+Claude Code 命令行配置：
+
+```bash
+claude mcp add douyin -- douyin mcp
+claude mcp list
+claude mcp get douyin
+```
+
+Codex CLI 命令行配置：
+
+```bash
+codex mcp add douyin -- douyin mcp
+codex mcp list
+codex mcp get douyin
+```
+
 服务器默认读取 `douyin auth` 保存的 `access_token` 和 `open_id`。如果工具调用参数里显式传入 `token` 或 `open_id`，会优先使用传入值。
 
 当前 MCP 工具：
@@ -171,7 +187,7 @@ douyin mcp
 
 ## 本地字幕
 
-字幕功能默认基于 `Qwen/Qwen3-ASR-1.7B`，从本地视频或音频生成字幕文件。该依赖较重，不随默认安装启用。
+字幕功能默认基于 `faster-whisper` 和 `Systran/faster-whisper-small`，从本地视频或音频生成字幕文件。该依赖较重，不随默认安装启用。
 
 ```bash
 uv tool install 'douyin-cli[subtitle]'
@@ -183,23 +199,37 @@ CUDA 版本：
 uv tool install 'douyin-cli[subtitle-cuda]'
 ```
 
+macOS Apple Silicon 先检查架构；只有 `arm64` 机器会安装 MLX 后端：
+
+```bash
+uname -m
+# 输出 arm64 时使用
+uv tool install 'douyin-cli[subtitle-mac]'
+```
+
 生成字幕：
 
 ```bash
 douyin subtitle video.mp4 --language zh
+douyin subtitle voice.mp3 --language zh
+douyin subtitle meeting.wav --format txt
 douyin subtitle video.mp4 --format vtt
 douyin subtitle *.mp4 --output subtitles/
 ```
+
+输入可以是本地视频或音频文件。默认输出路径会沿用输入文件名，只替换字幕后缀，例如 `voice.mp3` 生成 `voice.srt`。
 
 首次使用模型时会自动从 Hugging Face 下载。网络受限时可设置 `HF_ENDPOINT` 或提前缓存模型：
 
 ```bash
 douyin subtitle video.mp4 \
-  --model Qwen/Qwen3-ASR-1.7B \
+  --model Systran/faster-whisper-small \
   --model-cache-dir ~/.cache/douyin-cli/models
 ```
 
-如果需要继续使用 Whisper 后端，可显式指定：
+`qwen-asr` 后端仍可显式指定，但其当前发布版本依赖存在安全告警的 `transformers`，不再由 `douyin-cli[subtitle]` 默认安装。
+
+如果需要显式选择 Whisper 后端：
 
 ```bash
 douyin subtitle video.mp4 \

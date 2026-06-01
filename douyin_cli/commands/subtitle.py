@@ -7,7 +7,7 @@ from pathlib import Path
 import click
 
 from douyin_cli.subtitles import (
-    DEFAULT_QWEN_ASR_MODEL,
+    DEFAULT_SUBTITLE_MODEL,
     SubtitleDependencyError,
     SubtitleOptions,
     resolve_output_path,
@@ -44,7 +44,7 @@ from douyin_cli.subtitles import (
 )
 @click.option(
     "--model",
-    default=DEFAULT_QWEN_ASR_MODEL,
+    default=DEFAULT_SUBTITLE_MODEL,
     show_default=True,
     help="ASR 模型名称或路径",
 )
@@ -59,7 +59,7 @@ from douyin_cli.subtitles import (
     show_default=True,
     help=(
         "识别后端: auto/qwen-asr/faster-whisper/mlx-whisper；"
-        "macOS Apple Silicon 默认使用 mlx-whisper"
+        "macOS Apple Silicon 默认使用 mlx-whisper，其他平台默认使用 faster-whisper"
     ),
 )
 @click.option(

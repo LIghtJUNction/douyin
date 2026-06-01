@@ -38,6 +38,7 @@ class SubtitleDependencyError(RuntimeError):
 
 DEFAULT_QWEN_ASR_MODEL = "Qwen/Qwen3-ASR-1.7B"
 DEFAULT_QWEN_FORCED_ALIGNER = "Qwen/Qwen3-ForcedAligner-0.6B"
+DEFAULT_SUBTITLE_MODEL = "Systran/faster-whisper-small"
 CUDA_LIBRARY_HINT = (
     "CUDA 字幕依赖不完整。当前 faster-whisper/ctranslate2 需要 CUDA 12 "
     "运行库。请使用: uv tool install 'douyin-cli[subtitle-cuda]'；"
@@ -64,8 +65,8 @@ MACOS_MLX_INSTALL_HINT = (
     "--device cpu --compute-type int8"
 )
 QWEN_ASR_INSTALL_HINT = (
-    "缺少 Qwen 字幕依赖 qwen-asr/torch。请使用: "
-    "uv tool install 'douyin-cli[subtitle]'"
+    "缺少 Qwen 字幕依赖 qwen-asr/torch。qwen-asr 当前依赖存在安全告警的 "
+    "transformers 版本，douyin-cli 不再默认安装；如需使用，请自行评估后安装。"
 )
 MLX_MODEL_ALIASES = {
     "tiny": "mlx-community/whisper-tiny",
@@ -97,7 +98,7 @@ def resolve_subtitle_backend(backend: str) -> str:
         return backend
     if platform.system() == "Darwin" and platform.machine() == "arm64":
         return "mlx-whisper"
-    return "qwen-asr"
+    return "faster-whisper"
 
 
 def transcribe_media_with_qwen_asr(
