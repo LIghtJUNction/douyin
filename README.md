@@ -2,7 +2,7 @@
 
 # douyin-cli
 
-面向抖音开放平台官方 OpenAPI 的命令行工具，提供 OAuth 授权、token 管理、常用官方接口封装和通用 OpenAPI 请求能力。
+面向抖音开放平台与网页工作流的 Rust 命令行工具，提供 OAuth、OpenAPI、Cookie 抓取、媒体下载、本地字幕和自动化集成。
 
 ## 功能
 
@@ -12,50 +12,27 @@
 - 官方评论列表、评论回复列表、评论回复
 - 企业号私信消息发送
 - 任意官方 OpenAPI 路径请求
+- 网页作品、账号、话题、音乐、合集与搜索结果采集/下载
+- 网页评论与回复采集
 - stdio MCP 服务器，供 MCP 客户端调用抖音 OpenAPI 工具
-- 可选本地字幕生成
+- whisper.cpp 本地字幕生成
 - Obscura/自动化运行时集成
 
 ## 安装
 
-作为 Python 库安装：
+从源码安装 Rust CLI：
 
 ```bash
-uv add douyin-cli
+cargo install --path .
 ```
 
-命令行安装：
+开发构建和验证：
 
 ```bash
-uv tool install douyin-cli
-```
-
-开发安装：
-
-```bash
-uv tool install -e .
-uv tool install -e '.[subtitle-mac]'
-```
-
-字幕可选依赖：
-
-```bash
-uv tool install 'douyin-cli[subtitle]'
-uv tool install 'douyin-cli[subtitle-cuda]'
-uv tool install 'douyin-cli[subtitle-mac]'
-```
-
-Python 库调用示例：
-
-```python
-from douyin_cli.douyin import Douyin
-from douyin_cli.douyin.openapi import DouyinOpenAPIClient
-
-with DouyinOpenAPIClient() as client:
-    token_data = client.client_token("client_key", "client_secret")
-
-douyin = Douyin(target="搜索关键词", type="search", limit=5, cookie="sessionid=...")
-douyin.run()
+cargo build --release --locked
+cargo test --locked
+cargo clippy --locked --all-targets -- -D warnings
+./target/release/douyin --help
 ```
 
 ## Agent Skill
@@ -97,6 +74,17 @@ douyin auth login \
   --code "授权码"
 ```
 
+本地开发或内网回调调试时，也可以让 CLI 临时监听回调并自动捕获 `code`。此模式会把回调地址设置为本机监听地址，需确保开放平台应用允许对应回调地址：
+
+```bash
+douyin auth login \
+  --client-key "$DOUYIN_CLIENT_KEY" \
+  --client-secret "$DOUYIN_CLIENT_SECRET" \
+  --scope user_info \
+  --listen \
+  --callback-port 8787
+```
+
 检查和刷新授权：
 
 ```bash
@@ -112,6 +100,28 @@ douyin api userinfo
 douyin api comment-list --item-id "$DOUYIN_ITEM_ID"
 ```
 
+## 网页端 Cookie 与兼容采集
+
+除官方 OpenAPI 外，`douyin` 还保留网页端 Cookie 流程，用于搜索、主页作品、单作品和评论等兼容采集场景。Cookie 会保存到用户配置目录；测试或自动化时可用 `DOUYIN_HOME` 隔离状态。
+
+```bash
+douyin auth cookie-login --cookie "sessionid=...; ttwid=..."
+douyin auth cookie-status
+douyin -u "搜索关键词" -t search -l 5 --no-download
+douyin -u "https://www.douyin.com/video/..." -t aweme
+douyin auth cookie-logout
+```
+
+`douyin comment` 是隐藏兼容命令，不会出现在根命令帮助中，适合从单个作品 URL 抓取评论，也可以输出适合对话微调的数据格式：
+
+```bash
+douyin comment "https://www.douyin.com/video/..." --limit 100 --output comments.json
+douyin comment "https://www.douyin.com/video/..." \
+  --with-replies \
+  --format chatml-jsonl \
+  --output comments.jsonl
+```
+
 ## Obscura 集成
 
 `douyin` 提供稳定的 JSON 输出和集成 manifest，Obscura 可以直接发现命令能力并调用官方 OpenAPI。
@@ -121,6 +131,29 @@ douyin obscura manifest
 douyin obscura status
 douyin auth status --json
 ```
+
+## 网页评论抓取
+
+评论抓取继续使用网页 Cookie，并复用仓库原有的 Node.js 签名脚本：
+
+```bash
+douyin auth cookie-login --cookie "sessionid=...; ttwid=..."
+douyin comment "https://www.douyin.com/video/..." --limit 100
+douyin comment "https://www.douyin.com/video/..." --with-replies --format chatml-jsonl --output comments.jsonl
+```
+
+## 网页采集与下载
+
+根命令兼容 URL、ID、搜索关键词和目标文件，默认读取 `douyin auth cookie-login` 保存的 Cookie：
+
+```bash
+douyin -u "搜索关键词" -t search -l 5 --no-download
+douyin -u "https://www.douyin.com/video/..." -t aweme
+douyin -u "https://www.douyin.com/user/..." -t post -l 20
+douyin -u targets.txt -p ./downloads --download-title --download-cover
+```
+
+支持 `post`、`favorite`、`music`、`hashtag`、`search`、`following`、`follower`、`collection`、`mix` 与 `aweme` 类型。采集结果保存为 JSON 和 aria2 兼容下载清单；未指定 `--no-download` 时由 Rust 下载器写入媒体文件。
 
 ## MCP 服务器
 
@@ -238,25 +271,24 @@ douyin api request GET /oauth/userinfo/ \
 douyin subtitle video.mp4 --language zh
 douyin subtitle voice.mp3 --language zh
 douyin subtitle meeting.wav --format txt
-douyin subtitle video.mp4 --model Systran/faster-whisper-small --format srt
+douyin subtitle video.mp4 --model small --format srt
 ```
 
-输入可以是本地视频或音频文件，输出默认写到同名字幕文件，例如 `voice.mp3` 会生成 `voice.srt`。首次使用模型时会自动从 Hugging Face 下载。CUDA 模式需要 CUDA 12 运行库；如果系统只提供 CUDA 13，可安装 `douyin-cli[subtitle-cuda]`，或使用 CPU 模式：
+输入可以是本地视频或音频文件，输出支持 SRT、VTT、TXT 和 JSON。默认写到同名字幕文件，例如 `voice.mp3` 会生成 `voice.srt`。首次使用模型别名时会从 whisper.cpp 的 Hugging Face 仓库下载 GGML 模型；也可以直接传入本地 `.bin` 模型：
 
 ```bash
-douyin subtitle video.mp4 --device cpu --compute-type int8 --language zh
+douyin subtitle video.mp4 --model ./ggml-small.bin --local-files-only
+douyin subtitle *.mp4 --output subtitles/ --format vtt
 ```
 
-macOS Apple Silicon 可安装 MLX 后端使用本机 GPU：
+macOS 构建默认启用 Metal。其他平台默认使用 CPU；需要 CUDA 时以对应特性构建：
 
 ```bash
-uname -m
-# 输出 arm64 时使用 MLX 后端
-uv tool install 'douyin-cli[subtitle-mac]'
-douyin subtitle video.mp4 --backend mlx-whisper --language zh
+cargo install --path . --features cuda
+douyin subtitle video.mp4 --device cuda --language zh
 ```
 
-`--backend auto` 会在 macOS arm64 上优先使用 `mlx-whisper`，其他平台默认使用 `faster-whisper` 和 `Systran/faster-whisper-small`。`qwen-asr` 后端仍可显式指定，但其当前发布版本依赖存在安全告警的 `transformers`，不再由 `douyin-cli[subtitle]` 默认安装。`--compute-type` 只影响 `faster-whisper` 后端。
+`--backend auto` 与 `--backend whisper-cpp` 使用同一 Rust 原生后端。`--compute-type` 仅为旧命令兼容参数；实际量化精度由所选 GGML 模型决定。
 
 ## 环境变量
 
@@ -266,8 +298,9 @@ douyin subtitle video.mp4 --backend mlx-whisper --language zh
 
 ## 技术栈
 
-- Python 3.13
-- Click
-- MCP Python SDK
-- niquests
-- uv / uv-build
+- Rust 2024 edition
+- Clap
+- Reqwest + rustls
+- Serde JSON
+- Symphonia + whisper.cpp
+- Cargo

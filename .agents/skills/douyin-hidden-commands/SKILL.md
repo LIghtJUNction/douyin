@@ -7,18 +7,18 @@ description: "This skill should be used when working with douyin hidden commands
 
 Use this skill to discover and operate douyin command surfaces that are easy
 to miss from the default help output. Treat "hidden" here as two categories:
-Click-hidden commands and non-primary command surfaces that are intentionally
+Clap-hidden commands and non-primary command surfaces that are intentionally
 documented less prominently than the official OpenAPI flow.
 
 ## Discovery Workflow
 
-Inspect command registration before answering. Start with:
+Inspect Rust command registration before answering:
 
 ```bash
-rg -n "hidden=|@.*command|add_command|invoke_without_command|cookie-login|obscura" douyin_cli README.md tests
-uv run douyin --help
-uv run douyin auth --help
-uv run douyin obscura --help
+rg -n "command\(hide|Command::|CookieLogin|Obscura" src README.md
+cargo run --locked -- --help
+cargo run --locked -- auth --help
+cargo run --locked -- obscura --help
 ```
 
 Use `DOUYIN_HOME=/tmp/douyin-hidden-check` when commands may read or write
@@ -28,7 +28,7 @@ auth/config state during verification.
 
 ### `douyin comment`
 
-`douyin comment` is Click-hidden in `douyin_cli/commands/comment.py`, so it is
+`douyin comment` is Clap-hidden in `src/cli.rs`, so it is
 not listed in the root help. Use it for webpage-cookie comment collection from a
 single aweme/note URL.
 
@@ -38,7 +38,9 @@ douyin comment "https://www.douyin.com/video/..." --limit 100 --output comments.
 ```
 
 It uses saved Cookie auth by default and also accepts `--cookie` for one-off
-runs. Do not confuse this with official OpenAPI comment commands under
+runs. The command can emit `raw`, `chatml-jsonl`, or `chatml-json` for
+downstream datasets. Do not confuse this with official OpenAPI comment commands
+under
 `douyin api`, which require `access_token`, `open_id`, and appropriate scopes.
 
 ### `douyin api im-message-send`
@@ -70,9 +72,8 @@ Cookie values are saved in the user config file, not the repository:
 
 ### Root Compatibility Crawl
 
-The root command can run the legacy webpage crawler directly when URL/search
-options are provided. This is not a subcommand, so command discovery must inspect
-`douyin_cli/commands/root.py` and `douyin_cli/commands/compat.py`.
+The Rust root command runs the webpage crawler directly when URL/search options
+are provided.
 
 ```bash
 douyin -u "搜索关键词" -t search -l 5 --no-download
@@ -102,16 +103,13 @@ parsing human help text.
 For command-surface changes, run targeted help and tests:
 
 ```bash
-uv run pytest tests/test_cookie_status.py tests/test_obscura.py tests/test_comments.py
-DOUYIN_HOME=/tmp/douyin-hidden-check uv run douyin auth --help
-DOUYIN_HOME=/tmp/douyin-hidden-check uv run douyin obscura manifest
+cargo test --locked
+cargo clippy --locked --all-targets -- -D warnings
+DOUYIN_HOME=/tmp/douyin-hidden-check cargo run --locked -- auth --help
+DOUYIN_HOME=/tmp/douyin-hidden-check cargo run --locked -- obscura manifest
 ```
 
-If full CLI help is involved, also verify Windows-style encoding behavior:
-
-```bash
-PYTHONIOENCODING=cp1252 uv run python -m douyin_cli.cli --help
-```
+If full CLI help is involved, verify it on the Windows CI runner as well.
 
 Avoid running live Douyin network requests unless the user explicitly asks for
 real endpoint validation or provides valid Cookie/OpenAPI credentials.

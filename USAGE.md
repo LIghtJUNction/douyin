@@ -5,8 +5,10 @@
 命令行安装：
 
 ```bash
-uv tool install douyin-cli
+cargo install --path .
 ```
+
+当前命令面均由 Rust 实现，包括 OAuth、OpenAPI、Cookie 网页采集/下载、网页评论、本地字幕、stdio MCP 与 Obscura。
 
 `douyin auth` 默认使用抖音开放平台官方 OAuth。
 
@@ -25,6 +27,17 @@ douyin auth login \
 
 ```bash
 douyin auth code --code "授权码"
+```
+
+如需本机自动捕获回调，可使用 `--listen`，并在开放平台应用中允许对应本机回调地址：
+
+```bash
+douyin auth login \
+  --client-key "$DOUYIN_CLIENT_KEY" \
+  --client-secret "$DOUYIN_CLIENT_SECRET" \
+  --scope user_info \
+  --listen \
+  --callback-port 8787
 ```
 
 刷新和检查：
@@ -136,6 +149,36 @@ douyin api request POST /item/comment/reply/ \
   --json '{"item_id":"xxx","comment_id":"xxx","content":"谢谢反馈"}'
 ```
 
+## 网页端 Cookie 与兼容采集
+
+网页端 Cookie 流程独立于官方 OpenAPI OAuth，适合搜索、主页作品、单作品、评论抓取等兼容采集场景。长期保存 Cookie 请使用 `cookie-login`；一次性运行可传 `--cookie`。
+
+```bash
+douyin auth cookie-login --cookie "sessionid=...; ttwid=..."
+douyin auth cookie-status
+douyin -u "搜索关键词" -t search -l 5 --no-download
+douyin -u "https://www.douyin.com/user/..." -t post -l 20
+douyin -u "https://www.douyin.com/video/..." -t aweme
+douyin auth cookie-logout
+```
+
+隐藏命令 `douyin comment` 用于从单个作品抓取评论区，不在根命令帮助中展示：
+
+```bash
+douyin comment "https://www.douyin.com/video/..." --limit 100 --output comments.json
+douyin comment "https://www.douyin.com/video/..." \
+  --with-replies \
+  --reply-limit 50 \
+  --format chatml-jsonl \
+  --output comments.jsonl
+```
+
+常用输出格式：
+
+- `raw`：原始评论 JSON
+- `chatml-jsonl`：每行一条 ChatML 训练样本
+- `chatml-json`：JSON 数组格式的 ChatML 训练样本
+
 ## MCP 服务器
 
 `douyin mcp` 通过 stdio 启动抖音 MCP 服务器，适合 Claude Desktop、Codex、Claude Code 等 MCP 客户端直接调用抖音开放平台工具。
@@ -185,27 +228,23 @@ codex mcp get douyin
 - `im_message_send`：发送企业号私信消息
 - `openapi_request`：调用任意官方 OpenAPI 路径
 
+## 网页采集与下载
+
+根命令直接运行网页采集器。先保存 Cookie，或用 `--cookie` 仅为本次运行传入：
+
+```bash
+douyin auth cookie-login --cookie "sessionid=...; ttwid=..."
+douyin -u "搜索关键词" -t search -l 5 --no-download
+douyin -u "https://www.douyin.com/video/..." -t aweme
+douyin -u "https://www.douyin.com/user/..." -t post -l 20
+douyin -u targets.txt -p ./downloads --download-title --download-cover
+```
+
+`-t` 支持 `post`、`favorite`、`music`、`hashtag`、`search`、`following`、`follower`、`collection`、`mix` 和 `aweme`。搜索还可以传入 `--sort-type`、`--publish-time` 与 `--filter-duration`。`--no-download` 仅写 JSON 数据与 aria2 兼容下载清单；默认同时下载媒体文件。
+
 ## 本地字幕
 
-字幕功能默认基于 `faster-whisper` 和 `Systran/faster-whisper-small`，从本地视频或音频生成字幕文件。该依赖较重，不随默认安装启用。
-
-```bash
-uv tool install 'douyin-cli[subtitle]'
-```
-
-CUDA 版本：
-
-```bash
-uv tool install 'douyin-cli[subtitle-cuda]'
-```
-
-macOS Apple Silicon 先检查架构；只有 `arm64` 机器会安装 MLX 后端：
-
-```bash
-uname -m
-# 输出 arm64 时使用
-uv tool install 'douyin-cli[subtitle-mac]'
-```
+字幕功能使用 Rust 音频解码与 whisper.cpp，从本地视频或音频生成 SRT、VTT、TXT 或 JSON。macOS 构建默认启用 Metal，Linux/Windows 默认使用 CPU。
 
 生成字幕：
 
@@ -219,29 +258,28 @@ douyin subtitle *.mp4 --output subtitles/
 
 输入可以是本地视频或音频文件。默认输出路径会沿用输入文件名，只替换字幕后缀，例如 `voice.mp3` 生成 `voice.srt`。
 
-首次使用模型时会自动从 Hugging Face 下载。网络受限时可设置 `HF_ENDPOINT` 或提前缓存模型：
+首次使用 `tiny`、`base`、`small`、`medium`、`large-v3` 或 `turbo` 等模型别名时，会自动从 whisper.cpp 的 Hugging Face 仓库下载 GGML 模型。也可以直接指定本地模型：
 
 ```bash
 douyin subtitle video.mp4 \
-  --model Systran/faster-whisper-small \
-  --model-cache-dir ~/.cache/douyin-cli/models
+  --model ./ggml-small.bin \
+  --local-files-only
 ```
 
-`qwen-asr` 后端仍可显式指定，但其当前发布版本依赖存在安全告警的 `transformers`，不再由 `douyin-cli[subtitle]` 默认安装。
-
-如果需要显式选择 Whisper 后端：
+可用 `--model-cache-dir` 更改模型缓存目录。需要 CUDA 时重新构建：
 
 ```bash
-douyin subtitle video.mp4 \
-  --backend faster-whisper \
-  --model Systran/faster-whisper-small
+cargo install --path . --features cuda
+douyin subtitle video.mp4 --device cuda --language zh
 ```
 
-不用 CUDA 时：
+强制 CPU：
 
 ```bash
-douyin subtitle video.mp4 --device cpu --compute-type int8 --language zh
+douyin subtitle video.mp4 --device cpu --language zh
 ```
+
+`--compute-type` 是旧版兼容参数，whisper.cpp 的精度由 GGML 模型量化格式决定。
 
 ## 环境变量
 

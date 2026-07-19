@@ -37,6 +37,7 @@ env/
 /build/
 dist/
 release/
+target/
 
 # 本地环境变量
 .env.local

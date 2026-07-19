@@ -1,4 +1,4 @@
-// All the content in this article is only for learning and communication use, not for any other purpose, strictly prohibited for commercial use and illegal use, otherwise all the consequences are irrelevant to the author!
+// This signing implementation is bundled for compatibility with the Douyin web workflow.
 function rc4_encrypt(plaintext, key) {
     var s = [];
     for (var i = 0; i < 256; i++) {
