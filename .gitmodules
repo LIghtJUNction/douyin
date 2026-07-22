@@ -1,0 +1,3 @@
+[submodule "packaging/aur/douyin-cli"]
+	path = packaging/aur/douyin-cli
+	url = ssh://aur@aur.archlinux.org/douyin-cli.git

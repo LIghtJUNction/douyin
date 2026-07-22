@@ -8,6 +8,14 @@
 
 需要 Rust 1.88 或更高版本。网页采集和评论命令还需要系统中存在 `node`；其他命令不依赖 Node.js。
 
+Arch Linux 可通过 [AUR 的 douyin-cli 软件包](https://aur.archlinux.org/packages/douyin-cli) 安装：
+
+```bash
+paru -S douyin-cli
+# 或
+yay -S douyin-cli
+```
+
 从 crates.io 安装稳定版：
 
 ```bash
