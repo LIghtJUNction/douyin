@@ -1,18 +1,117 @@
-# 使用指南
+# douyin-cli 使用指南
 
-## 账号授权
+## 1. 安装与升级
 
-命令行安装：
+最低 Rust 版本为 1.88。确认本机工具链：
 
 ```bash
-cargo install --path .
+rustc --version
+cargo --version
 ```
 
-当前命令面均由 Rust 实现，包括 OAuth、OpenAPI、Cookie 网页采集/下载、网页评论、本地字幕、stdio MCP 与 Obscura。
+安装 crates.io 稳定版：
 
-`douyin auth` 默认使用抖音开放平台官方 OAuth。
+```bash
+cargo install douyin-cli --locked
+```
 
-生成授权链接并保存应用配置：
+强制升级：
+
+```bash
+cargo install douyin-cli --locked --force
+```
+
+从当前源码安装：
+
+```bash
+cargo install --path . --locked
+```
+
+确认命令可用：
+
+```bash
+douyin --version
+douyin --help
+```
+
+原生字幕依赖会在安装时编译 whisper.cpp，因此系统需要 C/C++ 构建工具。网页采集和评论签名需要 `node`：
+
+```bash
+node --version
+```
+
+如果只使用官方 OAuth、OpenAPI 或 MCP，可以不安装 Node.js。
+
+## 2. 认证方式
+
+### 2.1 如何选择
+
+| 场景 | 认证方式 | 命令入口 |
+| --- | --- | --- |
+| 网页搜索、作品下载、评论抓取 | 浏览器 Cookie | `douyin auth cookie-*` |
+| 官方用户信息、评论 API、企业号私信 | 官方 OAuth | `douyin auth login` |
+| MCP 中的官方 OpenAPI 工具 | 官方 OAuth | `douyin mcp` |
+
+两种认证相互独立，可以同时保存在同一个配置文件中。
+
+### 2.2 Cookie 登录
+
+1. 在浏览器登录 `douyin.com`。
+2. 打开开发者工具的 Network/网络面板。
+3. 选择一个发往 `douyin.com` 的请求。
+4. 从 Request Headers/请求头复制完整 Cookie 值，不要复制 `Cookie:` 前缀。
+5. 保存并检查：
+
+```bash
+douyin auth cookie-login --cookie "sessionid=...; ttwid=...; 其他字段=..."
+douyin auth cookie-status --offline
+douyin auth cookie-status
+```
+
+Cookie 至少应包含可识别的 `sessionid` 或 `ttwid` 字段。`--offline` 不访问网络；普通 `cookie-status` 会验证网页端连通性。
+
+环境变量方式：
+
+```bash
+export DOUYIN_COOKIE="完整 Cookie 字符串"
+douyin auth cookie-login
+douyin -u "关键词" -t search -l 5 --no-download
+unset DOUYIN_COOKIE
+```
+
+删除已保存 Cookie：
+
+```bash
+douyin auth cookie-logout
+```
+
+真实 Cookie 属于账号凭据，不要粘贴到聊天、Issue、日志或 Git 仓库。
+
+### 2.3 官方 OAuth 登录
+
+OAuth 需要抖音开放平台应用。准备：
+
+- `client_key`
+- `client_secret`
+- 应用允许的回调地址
+- 所需 scope，例如 `user_info`、`item.comment` 或 `enterprise.im`
+
+推荐本机回调方式。先在应用后台允许 `http://127.0.0.1:8787/callback`：
+
+```bash
+export DOUYIN_CLIENT_KEY="你的 client_key"
+export DOUYIN_CLIENT_SECRET="你的 client_secret"
+
+douyin auth login \
+  --scope user_info \
+  --scope item.comment \
+  --listen \
+  --callback-port 8787
+```
+
+CLI 默认输出授权链接和终端二维码。只输出链接时添加 `--no-qr`。
+
+手动回调方式：
 
 ```bash
 douyin auth login \
@@ -23,111 +122,135 @@ douyin auth login \
   --scope item.comment
 ```
 
-用户完成授权后，用回调得到的 `code` 换取并保存 token：
+浏览器授权后，取回调 URL 中的 `code`：
 
 ```bash
 douyin auth code --code "授权码"
 ```
 
-如需本机自动捕获回调，可使用 `--listen`，并在开放平台应用中允许对应本机回调地址：
+授权维护：
 
 ```bash
-douyin auth login \
-  --client-key "$DOUYIN_CLIENT_KEY" \
-  --client-secret "$DOUYIN_CLIENT_SECRET" \
-  --scope user_info \
-  --listen \
-  --callback-port 8787
-```
-
-刷新和检查：
-
-```bash
-douyin auth refresh
 douyin auth status
+douyin auth status --json
+douyin auth refresh
 douyin auth logout
 ```
 
-授权配置保存在系统用户配置目录，例如：
+## 3. 网页采集与下载
+
+网页采集使用已保存 Cookie。通用形式：
 
 ```text
-~/.config/douyin-cli/config/settings.json
+douyin -u <目标> -t <类型> -l <数量> [其他选项]
 ```
 
-## 官方 OpenAPI 命令
-
-获取 `client_token`：
+常用例子：
 
 ```bash
-douyin api client-token \
-  --client-key "$DOUYIN_CLIENT_KEY" \
-  --client-secret "$DOUYIN_CLIENT_SECRET"
+# 搜索前 5 条，仅保存数据
+douyin -u "搜索关键词" -t search -l 5 --no-download
+
+# 下载单个作品
+douyin -u "https://www.douyin.com/video/作品ID" -t aweme
+
+# 下载账号主页前 20 个作品
+douyin -u "https://www.douyin.com/user/用户ID" -t post -l 20
+
+# 批量目标、指定目录、保存标题和封面
+douyin -u targets.txt \
+  -p ./downloads \
+  --download-title \
+  --download-cover
 ```
 
-生成 OAuth 授权链接：
+采集类型：
+
+- `post`：账号发布作品
+- `favorite`：账号喜欢作品
+- `music`：音乐关联作品
+- `hashtag`：话题关联作品
+- `search`：关键词搜索
+- `following`：关注列表
+- `follower`：粉丝列表
+- `collection`：收藏合集
+- `mix`：作品合集
+- `aweme`：单作品
+
+搜索筛选：
 
 ```bash
-douyin api authorize-url \
-  --client-key "$DOUYIN_CLIENT_KEY" \
-  --redirect-uri "https://example.com/callback" \
-  --scope user_info \
-  --scope item.comment
+douyin -u "关键词" -t search -l 20 \
+  --sort-type 2 \
+  --publish-time 7 \
+  --filter-duration 1-5 \
+  --no-download
 ```
 
-用 OAuth code 换取 `access_token`：
+- `--sort-type`：`0` 综合、`1` 最多点赞、`2` 最新
+- `--publish-time`：`0` 不限、`1` 一天内、`7` 一周内、`180` 半年内
+- `--filter-duration`：`0-1`、`1-5`、`5-10000`
+
+## 4. 网页评论
+
+抓取一级评论：
 
 ```bash
-douyin api access-token \
-  --client-key "$DOUYIN_CLIENT_KEY" \
-  --client-secret "$DOUYIN_CLIENT_SECRET" \
-  --code "授权码"
+douyin comment "https://www.douyin.com/video/作品ID" --limit 100
 ```
 
-刷新和续期：
+同时抓取回复并写入文件：
 
 ```bash
-douyin api refresh-token \
-  --client-key "$DOUYIN_CLIENT_KEY" \
-  --refresh-token "$DOUYIN_REFRESH_TOKEN"
-
-douyin api renew-refresh-token \
-  --client-key "$DOUYIN_CLIENT_KEY" \
-  --refresh-token "$DOUYIN_REFRESH_TOKEN"
+douyin comment "https://www.douyin.com/video/作品ID" \
+  --limit 100 \
+  --with-replies \
+  --reply-limit 50 \
+  --format raw \
+  --output comments.json
 ```
 
-授权用户信息：
+生成 ChatML 数据：
 
 ```bash
-douyin api userinfo \
-  --token "$DOUYIN_ACCESS_TOKEN" \
-  --open-id "$DOUYIN_OPEN_ID"
+douyin comment "https://www.douyin.com/video/作品ID" \
+  --with-replies \
+  --format chatml-jsonl \
+  --min-comment-digg 5 \
+  --min-reply-digg 2 \
+  --output comments.jsonl
 ```
 
-官方评论接口：
+输出格式：
+
+- `raw`：标准评论 JSON
+- `chatml-jsonl`：每行一条 ChatML 样本
+- `chatml-json`：ChatML JSON 数组
+
+## 5. 官方 OpenAPI
+
+完成 OAuth 后，可以省略重复的 token 和 `open_id` 参数：
 
 ```bash
-douyin api comment-list \
-  --token "$DOUYIN_ACCESS_TOKEN" \
-  --open-id "$DOUYIN_OPEN_ID" \
-  --item-id "$DOUYIN_ITEM_ID"
-
+douyin api userinfo
+douyin api comment-list --item-id "$DOUYIN_ITEM_ID"
 douyin api comment-replies \
-  --token "$DOUYIN_ACCESS_TOKEN" \
-  --open-id "$DOUYIN_OPEN_ID" \
   --item-id "$DOUYIN_ITEM_ID" \
   --comment-id "$DOUYIN_COMMENT_ID"
+```
 
+回复评论：
+
+```bash
 douyin api comment-reply \
-  --token "$DOUYIN_ACCESS_TOKEN" \
-  --open-id "$DOUYIN_OPEN_ID" \
   --item-id "$DOUYIN_ITEM_ID" \
   --comment-id "$DOUYIN_COMMENT_ID" \
   --content "谢谢反馈"
 ```
 
-写操作默认会二次确认，自动化场景可加 `--yes`。
+写操作会要求确认；自动化调用可以显式添加 `--yes`。
 
-企业号私信发送需要应用已开通 `enterprise.im` 权限，并从私信事件回调中拿到接收方 `to_user_id`：
+企业号私信需要应用已开通 `enterprise.im`，并从事件回调取得 `to_user_id`：
 
 ```bash
 douyin api im-message-send \
@@ -136,58 +259,28 @@ douyin api im-message-send \
   --yes
 ```
 
-通用官方 OpenAPI 请求：
+通用同源 OpenAPI 请求：
 
 ```bash
 douyin api request GET /oauth/userinfo/ \
-  --token "$DOUYIN_ACCESS_TOKEN" \
   --param open_id="$DOUYIN_OPEN_ID"
 
 douyin api request POST /item/comment/reply/ \
-  --token "$DOUYIN_ACCESS_TOKEN" \
   --param open_id="$DOUYIN_OPEN_ID" \
   --json '{"item_id":"xxx","comment_id":"xxx","content":"谢谢反馈"}'
 ```
 
-## 网页端 Cookie 与兼容采集
+为避免 token 泄露，通用请求会拒绝指向其他域名的绝对 URL。
 
-网页端 Cookie 流程独立于官方 OpenAPI OAuth，适合搜索、主页作品、单作品、评论抓取等兼容采集场景。长期保存 Cookie 请使用 `cookie-login`；一次性运行可传 `--cookie`。
+## 6. MCP
 
-```bash
-douyin auth cookie-login --cookie "sessionid=...; ttwid=..."
-douyin auth cookie-status
-douyin -u "搜索关键词" -t search -l 5 --no-download
-douyin -u "https://www.douyin.com/user/..." -t post -l 20
-douyin -u "https://www.douyin.com/video/..." -t aweme
-douyin auth cookie-logout
-```
-
-隐藏命令 `douyin comment` 用于从单个作品抓取评论区，不在根命令帮助中展示：
-
-```bash
-douyin comment "https://www.douyin.com/video/..." --limit 100 --output comments.json
-douyin comment "https://www.douyin.com/video/..." \
-  --with-replies \
-  --reply-limit 50 \
-  --format chatml-jsonl \
-  --output comments.jsonl
-```
-
-常用输出格式：
-
-- `raw`：原始评论 JSON
-- `chatml-jsonl`：每行一条 ChatML 训练样本
-- `chatml-json`：JSON 数组格式的 ChatML 训练样本
-
-## MCP 服务器
-
-`douyin mcp` 通过 stdio 启动抖音 MCP 服务器，适合 Claude Desktop、Codex、Claude Code 等 MCP 客户端直接调用抖音开放平台工具。
+启动 stdio MCP 服务器：
 
 ```bash
 douyin mcp
 ```
 
-客户端配置示例：
+配置示例：
 
 ```json
 {
@@ -200,65 +293,43 @@ douyin mcp
 }
 ```
 
-Claude Code 命令行配置：
+命令行注册：
 
 ```bash
 claude mcp add douyin -- douyin mcp
-claude mcp list
-claude mcp get douyin
-```
-
-Codex CLI 命令行配置：
-
-```bash
 codex mcp add douyin -- douyin mcp
-codex mcp list
-codex mcp get douyin
 ```
 
-服务器默认读取 `douyin auth` 保存的 `access_token` 和 `open_id`。如果工具调用参数里显式传入 `token` 或 `open_id`，会优先使用传入值。
+MCP 工具包括：
 
-当前 MCP 工具：
+- `auth_status`
+- `userinfo`
+- `comment_list`
+- `comment_replies`
+- `comment_reply`
+- `im_message_send`
+- `openapi_request`
 
-- `auth_status`：查看本机保存的授权状态
-- `userinfo`：获取授权用户信息
-- `comment_list`：获取视频评论列表
-- `comment_replies`：获取评论回复列表
-- `comment_reply`：回复视频或评论
-- `im_message_send`：发送企业号私信消息
-- `openapi_request`：调用任意官方 OpenAPI 路径
+## 7. 本地字幕
 
-## 网页采集与下载
-
-根命令直接运行网页采集器。先保存 Cookie，或用 `--cookie` 仅为本次运行传入：
-
-```bash
-douyin auth cookie-login --cookie "sessionid=...; ttwid=..."
-douyin -u "搜索关键词" -t search -l 5 --no-download
-douyin -u "https://www.douyin.com/video/..." -t aweme
-douyin -u "https://www.douyin.com/user/..." -t post -l 20
-douyin -u targets.txt -p ./downloads --download-title --download-cover
-```
-
-`-t` 支持 `post`、`favorite`、`music`、`hashtag`、`search`、`following`、`follower`、`collection`、`mix` 和 `aweme`。搜索还可以传入 `--sort-type`、`--publish-time` 与 `--filter-duration`。`--no-download` 仅写 JSON 数据与 aria2 兼容下载清单；默认同时下载媒体文件。
-
-## 本地字幕
-
-字幕功能使用 Rust 音频解码与 whisper.cpp，从本地视频或音频生成 SRT、VTT、TXT 或 JSON。macOS 构建默认启用 Metal，Linux/Windows 默认使用 CPU。
-
-生成字幕：
+基本用法：
 
 ```bash
 douyin subtitle video.mp4 --language zh
-douyin subtitle voice.mp3 --language zh
-douyin subtitle meeting.wav --format txt
-douyin subtitle video.mp4 --format vtt
+douyin subtitle voice.mp3 --format txt
+douyin subtitle meeting.wav --format vtt
 douyin subtitle *.mp4 --output subtitles/
 ```
 
-输入可以是本地视频或音频文件。默认输出路径会沿用输入文件名，只替换字幕后缀，例如 `voice.mp3` 生成 `voice.srt`。
+支持 `srt`、`vtt`、`txt` 和 `json`。默认输出到输入文件旁边，并保留文件名。
 
-首次使用 `tiny`、`base`、`small`、`medium`、`large-v3` 或 `turbo` 等模型别名时，会自动从 whisper.cpp 的 Hugging Face 仓库下载 GGML 模型。也可以直接指定本地模型：
+模型别名包括 `tiny`、`base`、`small`、`medium`、`large-v3` 和 `turbo`。首次使用会下载对应 GGML 模型：
+
+```bash
+douyin subtitle video.mp4 --model small --language zh
+```
+
+只使用本地模型：
 
 ```bash
 douyin subtitle video.mp4 \
@@ -266,23 +337,65 @@ douyin subtitle video.mp4 \
   --local-files-only
 ```
 
-可用 `--model-cache-dir` 更改模型缓存目录。需要 CUDA 时重新构建：
+指定缓存目录和 CPU：
 
 ```bash
-cargo install --path . --features cuda
+douyin subtitle video.mp4 \
+  --model-cache-dir ./models \
+  --device cpu
+```
+
+Linux/Windows CUDA 版本：
+
+```bash
+cargo install douyin-cli --locked --features cuda --force
 douyin subtitle video.mp4 --device cuda --language zh
 ```
 
-强制 CPU：
+macOS 构建默认启用 Metal。
 
-```bash
-douyin subtitle video.mp4 --device cpu --language zh
-```
+## 8. 配置、环境变量与退出
 
-`--compute-type` 是旧版兼容参数，whisper.cpp 的精度由 GGML 模型量化格式决定。
+配置路径：
 
-## 环境变量
+- Linux/macOS：`~/.config/douyin-cli/config/settings.json`
+- Windows：`%APPDATA%\douyin-cli\config\settings.json`
+- 自定义或测试隔离：`DOUYIN_HOME=/path/to/directory`
 
+环境变量：
+
+- `DOUYIN_COOKIE`
 - `DOUYIN_CLIENT_KEY`
 - `DOUYIN_CLIENT_SECRET`
 - `DOUYIN_ACCESS_TOKEN`
+- `DOUYIN_HOME`
+
+退出命令：
+
+```bash
+douyin auth cookie-logout
+douyin auth logout
+```
+
+## 9. 故障排查
+
+```bash
+# 查看所有公开命令
+douyin --help
+
+# Cookie 仅做本地格式检查
+douyin auth cookie-status --offline
+
+# Cookie 联网检查
+douyin auth cookie-status
+
+# OAuth 状态和机器可读输出
+douyin auth status
+douyin auth status --json
+
+# 查看集成信息
+douyin obscura manifest
+douyin obscura status
+```
+
+遇到验证码或风控时，降低请求频率、重新从浏览器获取有效 Cookie，并避免高频并发请求。

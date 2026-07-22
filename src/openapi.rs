@@ -9,7 +9,7 @@ use serde_json::{Map, Value, json};
 pub const BASE_URL: &str = "https://open.douyin.com";
 
 pub struct OpenApiClient {
-    base_url: String,
+    base_url: Url,
     client: Client,
 }
 
@@ -19,15 +19,20 @@ impl OpenApiClient {
     }
 
     pub fn with_base_url(base_url: &str) -> Result<Self, String> {
+        let mut base_url =
+            Url::parse(base_url).map_err(|error| format!("OpenAPI base URL 无效: {error}"))?;
+        if !matches!(base_url.scheme(), "http" | "https") || base_url.host_str().is_none() {
+            return Err("OpenAPI base URL 必须是有效的 HTTP(S) 地址".to_owned());
+        }
+        base_url.set_path("/");
+        base_url.set_query(None);
+        base_url.set_fragment(None);
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(30))
             .build()
             .map_err(|error| error.to_string())?;
-        Ok(Self {
-            base_url: base_url.trim_end_matches('/').to_owned(),
-            client,
-        })
+        Ok(Self { base_url, client })
     }
 
     pub fn authorize_url(
@@ -37,8 +42,7 @@ impl OpenApiClient {
         scopes: &[String],
         state: Option<&str>,
     ) -> Result<String, String> {
-        let mut url =
-            Url::parse(&self.url("/platform/oauth/connect/")).map_err(|error| error.to_string())?;
+        let mut url = self.url("/platform/oauth/connect/")?;
         {
             let mut query = url.query_pairs_mut();
             query.append_pair("client_key", client_key);
@@ -125,7 +129,8 @@ impl OpenApiClient {
             .method
             .parse::<reqwest::Method>()
             .map_err(|error| format!("HTTP method 无效: {error}"))?;
-        let mut request = self.client.request(method, self.url(spec.path));
+        let url = self.url(spec.path)?;
+        let mut request = self.client.request(method, url);
         if let Some(token) = spec.token {
             request = request.header("access-token", token);
         }
@@ -143,22 +148,48 @@ impl OpenApiClient {
         let status = response.status();
         let text = response.text().map_err(|error| error.to_string())?;
         if !status.is_success() {
-            return Err(format!("OpenAPI HTTP 请求失败: {status} {text}"));
+            return Err(format!(
+                "OpenAPI HTTP 请求失败: {status} {}",
+                body_excerpt(&text)
+            ));
         }
-        let data: Value =
-            serde_json::from_str(&text).map_err(|_| format!("OpenAPI 响应不是 JSON: {text}"))?;
+        let data: Value = serde_json::from_str(&text)
+            .map_err(|_| format!("OpenAPI 响应不是 JSON: {}", body_excerpt(&text)))?;
         if !data.is_object() {
             return Err("OpenAPI 响应不是 JSON object".to_owned());
         }
         Ok(data)
     }
 
-    fn url(&self, path: &str) -> String {
-        if path.starts_with("http://") || path.starts_with("https://") {
-            path.to_owned()
-        } else {
-            format!("{}/{}", self.base_url, path.trim_start_matches('/'))
+    fn url(&self, path: &str) -> Result<Url, String> {
+        let resolved = self
+            .base_url
+            .join(path)
+            .map_err(|error| format!("OpenAPI path 无效: {error}"))?;
+        if !same_origin(&self.base_url, &resolved) {
+            return Err(format!(
+                "拒绝跨域 OpenAPI 请求: {}",
+                resolved.origin().ascii_serialization()
+            ));
         }
+        Ok(resolved)
+    }
+}
+
+fn same_origin(left: &Url, right: &Url) -> bool {
+    left.scheme() == right.scheme()
+        && left.host_str() == right.host_str()
+        && left.port_or_known_default() == right.port_or_known_default()
+}
+
+fn body_excerpt(body: &str) -> String {
+    const MAX_CHARS: usize = 2_000;
+    let mut characters = body.chars();
+    let excerpt: String = characters.by_ref().take(MAX_CHARS).collect();
+    if characters.next().is_some() {
+        format!("{excerpt}…（响应已截断）")
+    } else {
+        excerpt
     }
 }
 
@@ -214,7 +245,7 @@ fn add_headers(
 
 #[cfg(test)]
 mod tests {
-    use super::{OpenApiClient, RequestSpec, im_message_body};
+    use super::{OpenApiClient, RequestSpec, body_excerpt, im_message_body};
     use serde_json::json;
 
     #[test]
@@ -246,6 +277,31 @@ mod tests {
             })
             .unwrap_err();
         assert!(error.contains("access-token"));
+    }
+
+    #[test]
+    fn request_rejects_cross_origin_url_before_network() {
+        let client = OpenApiClient::new().unwrap();
+        let error = client
+            .request(RequestSpec {
+                method: "GET",
+                path: "https://example.com/collect",
+                token: Some("secret-token"),
+                auth_required: true,
+                ..RequestSpec::default()
+            })
+            .unwrap_err();
+        assert!(error.contains("拒绝跨域"));
+        assert!(!error.contains("secret-token"));
+    }
+
+    #[test]
+    fn validates_base_url_and_bounds_error_bodies() {
+        assert!(OpenApiClient::with_base_url("file:///tmp/api").is_err());
+        assert_eq!(body_excerpt("short"), "short");
+        let excerpt = body_excerpt(&"界".repeat(2_001));
+        assert!(excerpt.ends_with("…（响应已截断）"));
+        assert_eq!(excerpt.chars().count(), 2_008);
     }
 
     #[test]

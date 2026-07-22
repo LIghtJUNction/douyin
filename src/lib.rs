@@ -4,6 +4,7 @@ pub mod cli;
 pub mod comments;
 pub mod cookie;
 pub mod crawler;
+mod fs_utils;
 pub mod mcp;
 pub mod obscura;
 pub mod openapi;

@@ -1,9 +1,11 @@
 use std::env;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde_json::{Map, Value, json};
+
+use crate::fs_utils;
 
 pub fn config_root() -> PathBuf {
     if let Some(path) = env::var_os("DOUYIN_HOME").filter(|value| !value.is_empty()) {
@@ -53,14 +55,9 @@ pub fn save(settings: &Value) -> io::Result<()> {
         .ok_or_else(|| io::Error::other("配置文件路径缺少父目录"))?;
     fs::create_dir_all(parent)?;
 
-    let temporary = temporary_path(&path);
     let bytes = serde_json::to_vec_pretty(settings)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    fs::write(&temporary, bytes)?;
-    if cfg!(windows) && path.exists() {
-        fs::remove_file(&path)?;
-    }
-    fs::rename(temporary, path)
+    fs_utils::atomic_write(&path, &bytes)
 }
 
 pub fn openapi(settings: &Value) -> Map<String, Value> {
@@ -113,14 +110,6 @@ fn merge(base: &mut Value, overlay: Value) {
         }
         (base, overlay) => *base = overlay,
     }
-}
-
-fn temporary_path(path: &Path) -> PathBuf {
-    let name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("settings.json");
-    path.with_file_name(format!(".{name}.tmp-{}", std::process::id()))
 }
 
 #[cfg(test)]

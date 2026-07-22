@@ -1,5 +1,4 @@
 use std::fs::{self, File};
-use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use clap::{Args, ValueEnum};
@@ -14,7 +13,7 @@ use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
-use crate::settings;
+use crate::{fs_utils, settings};
 
 const TARGET_SAMPLE_RATE: u32 = 16_000;
 const DEFAULT_MODEL: &str = "small";
@@ -210,11 +209,9 @@ fn download_model(url: &str, path: &Path) -> Result<(), String> {
     if !response.status().is_success() {
         return Err(format!("模型下载失败: {}", response.status()));
     }
-    let temporary = path.with_extension("bin.part");
-    let mut output = File::create(&temporary).map_err(|error| error.to_string())?;
-    io::copy(&mut response, &mut output).map_err(|error| error.to_string())?;
-    output.flush().map_err(|error| error.to_string())?;
-    fs::rename(temporary, path).map_err(|error| error.to_string())
+    fs_utils::atomic_copy(&mut response, path)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 fn decode_media(path: &Path) -> Result<Vec<f32>, String> {
@@ -384,19 +381,13 @@ fn write_subtitle(
     path: &Path,
     format: SubtitleFormat,
 ) -> Result<(), String> {
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
     let content = match format {
         SubtitleFormat::Srt => render_srt(segments),
         SubtitleFormat::Vtt => render_vtt(segments),
         SubtitleFormat::Txt => render_txt(segments),
         SubtitleFormat::Json => render_json(segments)?,
     };
-    fs::write(path, content).map_err(|error| error.to_string())
+    fs_utils::atomic_write(path, content.as_bytes()).map_err(|error| error.to_string())
 }
 
 fn render_srt(segments: &[SubtitleSegment]) -> String {

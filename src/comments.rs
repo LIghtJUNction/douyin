@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
@@ -11,7 +10,7 @@ use reqwest::header::{
 };
 use serde_json::{Map, Value, json};
 
-use crate::{cookie, settings};
+use crate::{cookie, fs_utils, settings};
 
 const BASE_URL: &str = "https://www.douyin.com";
 const COMMENT_LIST: &str = "/aweme/v1/web/comment/list/";
@@ -507,13 +506,8 @@ fn contains_verify_check(value: &Value) -> bool {
 
 fn write_output(text: &str, path: Option<&Path>) -> Result<(), String> {
     if let Some(path) = path {
-        if let Some(parent) = path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-        {
-            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-        }
-        fs::write(path, format!("{text}\n")).map_err(|error| error.to_string())
+        fs_utils::atomic_write(path, format!("{text}\n").as_bytes())
+            .map_err(|error| error.to_string())
     } else {
         println!("{text}");
         Ok(())

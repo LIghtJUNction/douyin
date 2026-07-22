@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::fs::{self, File};
+use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -13,7 +13,7 @@ use reqwest::header::{
 use serde_json::{Map, Value, json};
 
 use crate::comments::{DEFAULT_USER_AGENT, sign};
-use crate::{cookie, settings};
+use crate::{cookie, fs_utils, settings};
 
 const BASE_URL: &str = "https://www.douyin.com";
 const USER_ID_PREFIX: &str = "MS4wLjABAAAA";
@@ -1060,7 +1060,7 @@ fn write_download_manifest(
         }
     }
     if !lines.is_empty() {
-        fs::write(manifest, lines).map_err(|error| error.to_string())?;
+        fs_utils::atomic_write(manifest, lines.as_bytes()).map_err(|error| error.to_string())?;
     }
     Ok(())
 }
@@ -1130,26 +1130,15 @@ fn download_file(client: &Client, url: &str, path: &Path) -> Result<(), String> 
 }
 
 fn persist_download(reader: &mut impl io::Read, path: &Path) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-    let temporary = path.with_extension(format!(
-        "{}.part",
-        path.extension()
-            .and_then(|value| value.to_str())
-            .unwrap_or("download")
-    ));
-    let mut file = File::create(&temporary).map_err(|error| error.to_string())?;
-    io::copy(reader, &mut file).map_err(|error| error.to_string())?;
-    file.flush().map_err(|error| error.to_string())?;
-    fs::rename(temporary, path).map_err(|error| error.to_string())
+    fs_utils::atomic_copy(reader, path)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 fn write_title(item: &Value, directory: &Path) -> Result<(), String> {
-    fs::create_dir_all(directory).map_err(|error| error.to_string())?;
-    fs::write(
-        directory.join(format!("{}_title.txt", string_field(item, "id"))),
-        string_field(item, "desc"),
+    fs_utils::atomic_write(
+        &directory.join(format!("{}_title.txt", string_field(item, "id"))),
+        string_field(item, "desc").as_bytes(),
     )
     .map_err(|error| error.to_string())
 }
@@ -1206,12 +1195,9 @@ fn item_filename(item: &Value, kind: CrawlType, fields: &[String], separator: &s
 }
 
 fn save_json(path: &Path, value: &Value) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
     let mut text = serde_json::to_string_pretty(value).map_err(|error| error.to_string())?;
     text.push('\n');
-    fs::write(path, text).map_err(|error| error.to_string())
+    fs_utils::atomic_write(path, text.as_bytes()).map_err(|error| error.to_string())
 }
 
 fn default_download_root() -> PathBuf {

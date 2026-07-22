@@ -3,11 +3,12 @@
 # ==========================
 下载/
 test.py
-user.*
-cookie.*
+/user.*
+/cookie.*
 
 # 下载目录中的所有数据文件（保留目录结构）
 download/
+/video
 
 # 配置文件和日志（包含用户数据）
 config/*

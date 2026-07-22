@@ -22,7 +22,6 @@ enum Command {
     /// 管理授权
     Auth(auth::AuthArgs),
     /// 抓取作品评论区
-    #[command(hide = true)]
     Comment(comments::CommentArgs),
     /// 通过 stdio 启动抖音 MCP 服务器
     Mcp,
