@@ -551,9 +551,9 @@ mod tests {
             wav.extend_from_slice(&sample.to_le_bytes());
         }
         let path = std::env::temp_dir().join(format!(
-            "douyin-subtitle-{}-{}.wav",
+            "douyin-subtitle-{}-{:?}.wav",
             std::process::id(),
-            std::thread::current().name().unwrap_or("test")
+            std::thread::current().id()
         ));
         fs::write(&path, wav).unwrap();
         let audio = decode_media(&path).unwrap();
