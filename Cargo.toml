@@ -1,11 +1,15 @@
 [package]
 name = "douyin-cli"
-version = "2026.7.20"
+version = "2026.7.22"
 edition = "2024"
 rust-version = "1.88"
 description = "A Rust CLI for Douyin OpenAPI and web workflows"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/LIghtJUNction/douyin"
+exclude = [
+    "packaging/**",
+    "unsloth_compiled_cache/**",
+]
 
 [features]
 default = []
