@@ -68,7 +68,7 @@ douyin auth cookie-status --offline
 douyin auth cookie-status
 ```
 
-Cookie 至少应包含可识别的 `sessionid` 或 `ttwid` 字段。`--offline` 不访问网络；普通 `cookie-status` 会验证网页端连通性。
+Cookie 至少应包含可识别的 `sessionid` 或 `ttwid` 字段。`--offline` 不访问网络，只检查本地格式；普通 `cookie-status` 会请求登录态接口并区分“已登录”“未登录或已过期”和“因验证码、风控或上游变化而无法确认”。匿名网页接口返回成功不能证明 Cookie 有效。状态检查不会输出 Cookie 或响应正文。
 
 环境变量方式：
 
@@ -386,7 +386,7 @@ douyin --help
 # Cookie 仅做本地格式检查
 douyin auth cookie-status --offline
 
-# Cookie 联网检查
+# Cookie 联网确认网页登录态
 douyin auth cookie-status
 
 # OAuth 状态和机器可读输出
@@ -398,4 +398,4 @@ douyin obscura manifest
 douyin obscura status
 ```
 
-遇到验证码或风控时，降低请求频率、重新从浏览器获取有效 Cookie，并避免高频并发请求。
+若 `cookie-status` 报告“无法确认”，可先用 `--offline` 确认本地格式。验证码、风控或上游接口变化都可能阻止在线确认；匿名网页接口返回成功不能证明 Cookie 有效。检查过程不会输出 Cookie 或响应正文。遇到验证码或风控时，降低请求频率、重新从浏览器获取有效 Cookie，并避免高频并发请求。

@@ -69,8 +69,9 @@ enum AuthCommand {
         #[arg(long, env = "DOUYIN_COOKIE")]
         cookie: String,
     },
-    /// 检查已保存 Cookie 是否可用于网页端请求
+    /// 检查已保存 Cookie 格式，并尝试确认网页登录态
     CookieStatus {
+        /// 只检查本地 Cookie 格式，不访问网络
         #[arg(long)]
         offline: bool,
     },
@@ -336,15 +337,19 @@ fn cookie_status(offline: bool) -> Result<(), String> {
         println!("Cookie 格式有效: {}", settings::settings_file().display());
         return Ok(());
     }
-    println!("正在检查网页端请求连通性...");
-    if cookie::probe(value) {
-        println!(
-            "Cookie 可用于网页端请求: {}",
-            settings::settings_file().display()
-        );
-        Ok(())
-    } else {
-        Err("Cookie 已保存，但网页端请求连通性检查失败".to_owned())
+    println!("正在确认网页登录态...");
+    match cookie::probe(value) {
+        Ok(true) => {
+            println!(
+                "Cookie 网页登录态有效: {}",
+                settings::settings_file().display()
+            );
+            Ok(())
+        }
+        Ok(false) => Err("Cookie 已保存，但网页登录态无效或已过期".to_owned()),
+        Err(error) => Err(format!(
+            "Cookie 已保存且格式有效，但无法确认网页登录态: {error}\n可运行 douyin auth cookie-status --offline 仅检查本地格式"
+        )),
     }
 }
 

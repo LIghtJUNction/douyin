@@ -53,7 +53,9 @@ douyin auth cookie-status --offline
 douyin auth cookie-status
 ```
 
-`--offline` 只检查本地格式；不带该参数时会发起网页连通性检查。也可以通过环境变量传入，避免每次添加 `--cookie`：
+`--offline` 只检查本地格式；不带该参数时会请求抖音登录态接口，尝试确认当前网页登录态。匿名网页接口即使返回成功也不能证明 Cookie 有效，因此不会作为登录依据。若遇到验证码、风控或上游接口变化，命令会明确报告“无法确认”，而不会误判为已登录。检查过程不会输出 Cookie 或响应正文。
+
+也可以通过环境变量传入，避免每次添加 `--cookie`：
 
 ```bash
 export DOUYIN_COOKIE="完整 Cookie 字符串"

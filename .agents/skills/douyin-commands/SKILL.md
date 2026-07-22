@@ -35,8 +35,11 @@ douyin auth status
 ```
 
 Explain that `cookie-status --offline` checks format only, while ordinary
-`cookie-status` performs a live connectivity check. Keep credentials out of
-logs, chat, and repositories.
+`cookie-status` asks the login-state endpoint to distinguish logged in, logged
+out or expired, and unable to confirm. Captcha, risk-control, and unrecognized
+upstream responses are unable-to-confirm results. A successful anonymous web
+endpoint is not authentication proof. Keep Cookie values and response bodies
+out of logs, chat, and repositories.
 
 ## Run Web Workflows
 

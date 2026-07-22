@@ -52,6 +52,12 @@ douyin auth cookie-status
 douyin auth cookie-logout
 ```
 
+Treat `cookie-status --offline` as local format validation only. Ordinary
+`cookie-status` uses the login-state endpoint and may report that the state
+cannot be confirmed when Douyin returns a captcha, risk-control page, or an
+unrecognized upstream response. Never use a successful anonymous web endpoint
+as proof of authentication, and never expose Cookie values or response bodies.
+
 OAuth flow:
 
 ```bash
