@@ -3,6 +3,7 @@ use std::io::{self, BufRead, Write};
 
 use serde_json::{Map, Value, json};
 
+use crate::insights::{self, TextRecord};
 use crate::openapi::{OpenApiClient, RequestSpec, im_message_body};
 use crate::settings;
 
@@ -96,6 +97,9 @@ fn initialize(request: &Value) -> Value {
 
 fn tools() -> Vec<Value> {
     vec![
+        tool("hot_words", "离线发现输入文本中的热词。基于可解释的频次启发式，不表示理解真实语义。", insights_schema(), true),
+        tool("hot_memes", "离线发现重复短句、口头禅、emoji 与固定表达。", insights_schema(), true),
+        tool("demand_discovery", "离线提取包含购买、求助、功能或问题意图信号的原句。", insights_schema(), true),
         tool("auth_status", "查看本机是否已保存抖音开放平台授权信息。", json!({"type":"object","properties":{}}), true),
         tool("userinfo", "获取官方授权用户信息。", auth_schema(json!({})), true),
         tool("comment_list", "获取官方接口中的视频评论列表。", auth_schema(json!({
@@ -123,6 +127,18 @@ fn tools() -> Vec<Value> {
             "required":["method","path"]
         }), false),
     ]
+}
+
+fn insights_schema() -> Value {
+    json!({
+        "type":"object",
+        "properties":{
+            "texts":{"type":"array","items":{"type":"string"}},
+            "top":{"type":"integer","default":20,"minimum":0},
+            "min_count":{"type":"integer","default":2,"minimum":1}
+        },
+        "required":["texts"]
+    })
 }
 
 fn tool(name: &str, description: &str, schema: Value, read_only: bool) -> Value {
@@ -177,6 +193,9 @@ fn call_tool(request: &Value) -> Result<Value, ToolError> {
 }
 
 fn execute_tool(name: &str, args: &Map<String, Value>) -> Result<Value, ToolError> {
+    if matches!(name, "hot_words" | "hot_memes" | "demand_discovery") {
+        return execute_insights_tool(name, args);
+    }
     if name == "auth_status" {
         let saved = saved_openapi()?;
         return Ok(json!({
@@ -315,6 +334,35 @@ fn execute_tool(name: &str, args: &Map<String, Value>) -> Result<Value, ToolErro
     }
 }
 
+fn execute_insights_tool(name: &str, args: &Map<String, Value>) -> Result<Value, ToolError> {
+    let texts = args
+        .get("texts")
+        .and_then(Value::as_array)
+        .ok_or_else(|| ToolError::Execution("texts 必须是字符串数组".to_owned()))?;
+    let records = texts
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(|text| TextRecord::new(text, None))
+                .ok_or_else(|| ToolError::Execution("texts 必须是字符串数组".to_owned()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let top = non_negative_integer(args, "top", 20)?;
+    let min_count = positive_integer(args, "min_count", 2)?;
+    let result = insights::analyze(&records, top, min_count);
+    let key = match name {
+        "hot_words" => "hot_words",
+        "hot_memes" => "hot_memes",
+        "demand_discovery" => "demands",
+        _ => return Err(ToolError::Unknown(name.to_owned())),
+    };
+    Ok(json!({
+        "input_count": result["input_count"],
+        key: result[key]
+    }))
+}
+
 fn request(
     client: &OpenApiClient,
     method: &str,
@@ -376,6 +424,37 @@ fn integer(args: &Map<String, Value>, key: &str, default: i64) -> i64 {
     args.get(key).and_then(Value::as_i64).unwrap_or(default)
 }
 
+fn non_negative_integer(
+    args: &Map<String, Value>,
+    key: &str,
+    default: usize,
+) -> Result<usize, ToolError> {
+    let value = args
+        .get(key)
+        .map(|value| {
+            value
+                .as_u64()
+                .ok_or_else(|| ToolError::Execution(format!("{key} 必须是非负整数")))
+        })
+        .transpose()?
+        .unwrap_or(default as u64);
+    usize::try_from(value).map_err(execution)
+}
+
+fn positive_integer(args: &Map<String, Value>, key: &str, default: u64) -> Result<u64, ToolError> {
+    let value = args
+        .get(key)
+        .map(|value| {
+            value
+                .as_u64()
+                .filter(|value| *value > 0)
+                .ok_or_else(|| ToolError::Execution(format!("{key} 必须是正整数")))
+        })
+        .transpose()?
+        .unwrap_or(default);
+    Ok(value)
+}
+
 fn string_map(
     args: &Map<String, Value>,
     key: &str,
@@ -433,7 +512,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_exposes_openapi_tools() {
+    fn tools_list_exposes_openapi_and_offline_insights_tools() {
         let response =
             handle_message(&json!({"jsonrpc":"2.0","id":2,"method":"tools/list"})).unwrap();
         let names: Vec<_> = response["result"]["tools"]
@@ -450,9 +529,28 @@ mod tests {
             "comment_reply",
             "im_message_send",
             "openapi_request",
+            "hot_words",
+            "hot_memes",
+            "demand_discovery",
         ] {
             assert!(names.contains(&expected));
         }
+    }
+
+    #[test]
+    fn offline_insights_tool_call_does_not_require_authorization() {
+        let response = handle_message(&json!({
+            "jsonrpc":"2.0","id":5,"method":"tools/call","params":{
+                "name":"demand_discovery",
+                "arguments":{"texts":["求链接","求链接"],"top":5,"min_count":2}
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            response["result"]["structuredContent"]["demands"][0]["text"],
+            "求链接"
+        );
+        assert_eq!(response["result"]["isError"], false);
     }
 
     #[test]

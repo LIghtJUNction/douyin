@@ -1,7 +1,7 @@
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use serde_json::{Value, json};
 
-use crate::{api, auth, comments, crawler, mcp, obscura, settings, subtitles};
+use crate::{api, auth, comments, crawler, insights, mcp, obscura, settings, subtitles};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -23,6 +23,8 @@ enum Command {
     Auth(auth::AuthArgs),
     /// 抓取作品评论区
     Comment(comments::CommentArgs),
+    /// 离线分析热词、热梗与需求发现
+    Insights(insights::InsightsArgs),
     /// 通过 stdio 启动抖音 MCP 服务器
     Mcp,
     /// Obscura 集成辅助命令
@@ -55,6 +57,7 @@ pub fn run() -> Result<(), String> {
         Some(Command::Api(args)) => api::run(args),
         Some(Command::Auth(args)) => auth::run(args),
         Some(Command::Comment(args)) => comments::run(args),
+        Some(Command::Insights(args)) => insights::run(args),
         Some(Command::Mcp) => mcp::run_stdio(),
         Some(Command::Obscura(args)) => run_obscura(args.command),
         Some(Command::Subtitle(args)) => subtitles::run(args),

@@ -227,7 +227,31 @@ douyin comment "https://www.douyin.com/video/作品ID" \
 - `chatml-jsonl`：每行一条 ChatML 样本
 - `chatml-json`：ChatML JSON 数组
 
-## 5. 官方 OpenAPI
+## 5. 热词、热梗与需求发现
+
+本地离线分析文件：
+
+```bash
+douyin insights comments.json --top 20 --min-count 2 --format json
+douyin insights crawler.json -o insights.json
+```
+
+从 stdin 读取，并输出 Markdown：
+
+```bash
+cat comments.jsonl | douyin insights - --format markdown -o insights.md
+```
+
+输入格式包括：
+
+- raw comments JSON，递归读取一级评论和 `replies`，并使用互动数字作为排序权重
+- crawler JSON 数组或对象中的 `desc`、`text`、`tag` 与 `text_extra[].tag_name`
+- ChatML JSON 或每行一条记录的 ChatML JSONL
+- 每行一条文本记录的纯文本
+
+JSON 顶层字段为 `input_count`、`hot_words`、`hot_memes`、`demands`。热词和热梗条目包含 `text`、`count`、`score`；需求条目还包含命中的 `signals`。分析使用停用词、短语切分、重复频次和意图关键词等确定性启发式规则，不访问网络，也不表示算法理解真实语义。
+
+## 6. 官方 OpenAPI
 
 完成 OAuth 后，可以省略重复的 token 和 `open_id` 参数：
 
@@ -272,7 +296,7 @@ douyin api request POST /item/comment/reply/ \
 
 为避免 token 泄露，通用请求会拒绝指向其他域名的绝对 URL。
 
-## 6. MCP
+## 7. MCP
 
 启动 stdio MCP 服务器：
 
@@ -302,6 +326,9 @@ codex mcp add douyin -- douyin mcp
 
 MCP 工具包括：
 
+- `hot_words`（离线，只读，无需 OAuth）
+- `hot_memes`（离线，只读，无需 OAuth）
+- `demand_discovery`（离线，只读，无需 OAuth）
 - `auth_status`
 - `userinfo`
 - `comment_list`
@@ -310,7 +337,9 @@ MCP 工具包括：
 - `im_message_send`
 - `openapi_request`
 
-## 7. 本地字幕
+三个离线洞察工具的输入均为必填字符串数组 `texts`，并可传 `top`（默认 `20`）和 `min_count`（默认 `2`）。其余官方 OpenAPI 工具按各自要求使用 OAuth。
+
+## 8. 本地字幕
 
 基本用法：
 
