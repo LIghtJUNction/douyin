@@ -253,7 +253,7 @@ dependencies = [
 
 [[package]]
 name = "douyin-cli"
-version = "2026.7.22"
+version = "2026.7.23"
 dependencies = [
  "base64",
  "clap",

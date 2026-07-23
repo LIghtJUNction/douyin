@@ -123,6 +123,7 @@ douyin --help
 douyin auth --help
 douyin api --help
 douyin comment --help
+douyin insights --help
 douyin subtitle --help
 ```
 
@@ -163,6 +164,19 @@ douyin comment "https://www.douyin.com/video/作品ID" \
 
 输出格式包括 `raw`、`chatml-jsonl` 和 `chatml-json`。
 
+### 热词、热梗与需求发现
+
+对本地文件或 stdin 做确定性的离线频次分析，不访问网络，也不需要 Cookie 或 OAuth：
+
+```bash
+douyin insights comments.json --top 20 --min-count 2
+cat comments.jsonl | douyin insights - --format markdown -o insights.md
+```
+
+输入支持 raw comments JSON（包括 `replies`）、crawler JSON 中的 `desc`/`text`/`tag` 与 `text_extra[].tag_name`、ChatML JSON/JSONL，以及每行一条记录的纯文本。JSON 输出包含 `input_count`、`hot_words`、`hot_memes` 和 `demands`；需求项包含原文 `text`、`count`、互动权重参与计算的 `score` 与命中的 `signals`。
+
+这些结果来自停用词、重复频次和意图关键词等可解释启发式规则，不表示算法理解了文本的真实语义。
+
 ### 调用官方 OpenAPI
 
 完成 OAuth 后，命令会自动读取已保存的 `access_token` 和 `open_id`：
@@ -193,7 +207,7 @@ douyin api request GET /oauth/userinfo/ \
 
 ## MCP 服务器
 
-`douyin mcp` 通过 stdio 提供官方 OpenAPI 工具，并复用已保存的 OAuth 授权。
+`douyin mcp` 通过 stdio 提供官方 OpenAPI 工具，并复用已保存的 OAuth 授权；离线洞察工具 `hot_words`、`hot_memes`、`demand_discovery` 只接收 `texts`、`top`、`min_count`，不需要授权。
 
 ```bash
 douyin mcp
