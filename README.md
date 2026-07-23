@@ -2,7 +2,7 @@
 
 # douyin-cli
 
-面向抖音开放平台与网页工作流的 Rust 命令行工具，支持网页采集与下载、评论抓取、官方 OAuth/OpenAPI、stdio MCP 和本地字幕。
+面向抖音开放平台与网页工作流的 Rust 命令行工具，支持网页采集与下载、评论抓取、离线元数据统计、官方 OAuth/OpenAPI、stdio MCP 和本地字幕。
 
 ## 安装
 
@@ -124,6 +124,7 @@ douyin auth --help
 douyin api --help
 douyin comment --help
 douyin insights --help
+douyin stats --help
 douyin subtitle --help
 ```
 
@@ -176,6 +177,18 @@ cat comments.jsonl | douyin insights - --format markdown -o insights.md
 输入支持 raw comments JSON（包括 `replies`）、crawler JSON 中的 `desc`/`text`/`tag` 与 `text_extra[].tag_name`、ChatML JSON/JSONL，以及每行一条记录的纯文本。JSON 输出包含 `input_count`、`hot_words`、`hot_memes` 和 `demands`；需求项包含原文 `text`、`count`、互动权重参与计算的 `score` 与命中的 `signals`。
 
 这些结果来自停用词、重复频次和意图关键词等可解释启发式规则，不表示算法理解了文本的真实语义。
+
+### 作品表现离线统计
+
+对 crawler JSON 的作品元数据做离线汇总和排名，不读取或分析媒体画面、声音：
+
+```bash
+douyin stats search_陈震同学.json --author 陈震同学 --sort score --top 10
+```
+
+输入支持扁平作品数组、单个作品对象，以及 `items`、`aweme_list`、`data` 数组容器。`--sort` 支持 `score`、`interactions`、`likes`、`comments`、`collects`、`shares`、`duration`、`latest`；输出可选 JSON 或 Markdown。
+
+综合分在当前匹配集合内分别使用 `ln(1+x)/ln(1+max)` 归一化点赞、评论、收藏、分享，并按 35%、20%、20%、25% 加权到 0–100 分。由于 crawler 元数据没有播放量，这个分数不是互动率，只适合在本次匹配集合内比较。
 
 ### 调用官方 OpenAPI
 

@@ -251,7 +251,27 @@ cat comments.jsonl | douyin insights - --format markdown -o insights.md
 
 JSON 顶层字段为 `input_count`、`hot_words`、`hot_memes`、`demands`。热词和热梗条目包含 `text`、`count`、`score`；需求条目还包含命中的 `signals`。分析使用停用词、短语切分、重复频次和意图关键词等确定性启发式规则，不访问网络，也不表示算法理解真实语义。
 
-## 6. 官方 OpenAPI
+## 6. 作品表现离线统计
+
+统计 crawler 输出中的作品元数据：
+
+```bash
+douyin stats search_陈震同学.json --author 陈震同学 --sort score --top 10
+```
+
+输入支持：
+
+- crawler 扁平 JSON 数组
+- 单个作品对象
+- 对象中的 `items`、`aweme_list` 或 `data` 数组
+
+可用排序为 `score`、`interactions`、`likes`、`comments`、`collects`、`shares`、`duration`、`latest`。使用 `--format markdown` 可输出包含总体汇总、字段覆盖、时长分桶、作者、话题和 Top 作品的 Markdown 报告。
+
+`score` 在当前匹配集合内对点赞、评论、收藏、分享分别计算 `ln(1+x)/ln(1+max)`，再按 35%、20%、20%、25% 加权为 0–100 分。输入没有播放量，因此该分数不是互动率，也不应跨不同输入集合直接比较。
+
+此命令只统计已采集的元数据，不分析 Hook、镜头、媒体画面、声音、字幕。
+
+## 7. 官方 OpenAPI
 
 完成 OAuth 后，可以省略重复的 token 和 `open_id` 参数：
 
@@ -296,7 +316,7 @@ douyin api request POST /item/comment/reply/ \
 
 为避免 token 泄露，通用请求会拒绝指向其他域名的绝对 URL。
 
-## 7. MCP
+## 8. MCP
 
 启动 stdio MCP 服务器：
 
@@ -339,7 +359,7 @@ MCP 工具包括：
 
 三个离线洞察工具的输入均为必填字符串数组 `texts`，并可传 `top`（默认 `20`）和 `min_count`（默认 `2`）。其余官方 OpenAPI 工具按各自要求使用 OAuth。
 
-## 8. 本地字幕
+## 9. 本地字幕
 
 基本用法：
 
@@ -383,7 +403,7 @@ douyin subtitle video.mp4 --device cuda --language zh
 
 macOS 构建默认启用 Metal。
 
-## 8. 配置、环境变量与退出
+## 10. 配置、环境变量与退出
 
 配置路径：
 
@@ -406,7 +426,7 @@ douyin auth cookie-logout
 douyin auth logout
 ```
 
-## 9. 故障排查
+## 11. 故障排查
 
 ```bash
 # 查看所有公开命令

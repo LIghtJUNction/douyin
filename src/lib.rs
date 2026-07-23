@@ -10,4 +10,5 @@ pub mod mcp;
 pub mod obscura;
 pub mod openapi;
 pub mod settings;
+pub mod stats;
 pub mod subtitles;
