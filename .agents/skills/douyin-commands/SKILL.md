@@ -1,6 +1,6 @@
 ---
 name: douyin-commands
-description: "Use this skill for douyin CLI command discovery and operation, especially choosing Cookie versus OAuth login, running root crawls, collecting comments, calling OpenAPI, starting MCP, generating subtitles, or checking Obscura integration."
+description: "Use this skill for douyin CLI command discovery and operation, especially choosing Cookie versus OAuth login, running root crawls, collecting comments, calling OpenAPI, starting MCP, or checking Obscura integration."
 ---
 
 # Douyin Command Guide
@@ -12,7 +12,6 @@ douyin --help
 douyin auth --help
 douyin api --help
 douyin comment --help
-douyin subtitle --help
 ```
 All commands are public. If documentation and help disagree, inspect `src/cli.rs`
 and the relevant Rust module, then update the documentation.
@@ -61,13 +60,11 @@ douyin api userinfo
 douyin api comment-list --item-id "$DOUYIN_ITEM_ID"
 douyin api request GET /oauth/userinfo/ --param open_id="$DOUYIN_OPEN_ID"
 douyin mcp
-douyin subtitle video.mp4 --language zh
 douyin obscura manifest
 ```
 
 Treat OpenAPI write commands as confirmation-gated unless `--yes` is explicit.
-Only use same-origin OpenAPI paths. Keep subtitle inference local; model aliases
-may download GGML files unless `--local-files-only` is passed.
+Only use same-origin OpenAPI paths.
 
 ## Verify Command Changes
 

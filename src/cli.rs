@@ -1,7 +1,7 @@
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use serde_json::{Value, json};
 
-use crate::{api, auth, comments, crawler, insights, mcp, obscura, settings, stats, subtitles};
+use crate::{api, auth, comments, crawler, insights, mcp, obscura, settings, stats};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -31,8 +31,6 @@ enum Command {
     Obscura(ObscuraArgs),
     /// 离线统计采集作品表现，不分析媒体画面/声音
     Stats(stats::StatsArgs),
-    /// 从本地视频/音频生成字幕
-    Subtitle(subtitles::SubtitleArgs),
 }
 
 #[derive(Debug, Args)]
@@ -63,7 +61,6 @@ pub fn run() -> Result<(), String> {
         Some(Command::Mcp) => mcp::run_stdio(),
         Some(Command::Obscura(args)) => run_obscura(args.command),
         Some(Command::Stats(args)) => stats::run(args),
-        Some(Command::Subtitle(args)) => subtitles::run(args),
         None if cli.crawl.should_run() => crawler::run(cli.crawl),
         None => {
             Cli::command()

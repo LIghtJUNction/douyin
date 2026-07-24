@@ -2,7 +2,7 @@
 
 # douyin-cli
 
-面向抖音开放平台与网页工作流的 Rust 命令行工具，支持网页采集与下载、评论抓取、离线元数据统计、官方 OAuth/OpenAPI、stdio MCP 和本地字幕。
+面向抖音开放平台与网页工作流的 Rust 命令行工具，支持网页采集与下载、评论抓取、离线元数据统计、官方 OAuth/OpenAPI 和 stdio MCP。
 
 ## 安装
 
@@ -37,8 +37,6 @@ git clone https://github.com/LIghtJUNction/douyin.git
 cd douyin
 cargo install --path . --locked
 ```
-
-安装时会编译 whisper.cpp。若系统提示原生构建工具缺失，请安装 C/C++ 工具链、CMake，以及 Clang（Windows 可使用 MSVC Build Tools）。macOS 默认启用 Metal；Linux/Windows 默认使用 CPU。CUDA 构建方式见[本地字幕](#本地字幕)。
 
 ## 选择登录方式
 
@@ -125,7 +123,6 @@ douyin api --help
 douyin comment --help
 douyin insights --help
 douyin stats --help
-douyin subtitle --help
 ```
 
 ### 搜索和采集
@@ -244,31 +241,6 @@ MCP 客户端配置：
 ```bash
 claude mcp add douyin -- douyin mcp
 codex mcp add douyin -- douyin mcp
-```
-
-## 本地字幕
-
-输入支持本地视频或音频，输出支持 SRT、VTT、TXT 和 JSON：
-
-```bash
-douyin subtitle video.mp4 --language zh
-douyin subtitle voice.mp3 --format txt
-douyin subtitle *.mp4 --output subtitles/ --format vtt
-```
-
-首次使用模型别名时会下载 whisper.cpp GGML 模型。也可以只使用本地模型：
-
-```bash
-douyin subtitle video.mp4 \
-  --model ./ggml-small.bin \
-  --local-files-only
-```
-
-Linux/Windows 可选择 CUDA 构建：
-
-```bash
-cargo install douyin-cli --locked --features cuda --force
-douyin subtitle video.mp4 --device cuda --language zh
 ```
 
 ## 配置和环境变量

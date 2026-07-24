@@ -1,6 +1,6 @@
 ---
 name: douyin
-description: "Use this skill when installing, upgrading, developing, testing, packaging, or troubleshooting this repository's Rust douyin CLI, including OAuth/OpenAPI, Cookie web workflows, MCP, crawling, comments, downloads, and subtitles."
+description: "Use this skill when installing, upgrading, developing, testing, packaging, or troubleshooting this repository's Rust douyin CLI, including OAuth/OpenAPI, Cookie web workflows, MCP, crawling, comments, and downloads."
 ---
 
 # Douyin Rust CLI
@@ -32,9 +32,8 @@ cargo install --path . --locked
 douyin --version
 ```
 
-Require Rust 1.88 or newer. Expect the subtitle dependency to compile native
-whisper.cpp code. Require `node` only for webpage crawling and comments because
-those flows use the bundled JavaScript signer.
+Require Rust 1.88 or newer. Require `node` only for webpage crawling and
+comments because those flows use the bundled JavaScript signer.
 
 ## Select Authentication Correctly
 
@@ -77,7 +76,6 @@ douyin -u "关键词" -t search -l 5 --no-download
 douyin -u "https://www.douyin.com/video/..." -t aweme
 douyin comment "https://www.douyin.com/video/..." --with-replies --format chatml-jsonl --output comments.jsonl
 douyin api userinfo
-douyin subtitle video.mp4 --language zh
 douyin mcp
 ```
 

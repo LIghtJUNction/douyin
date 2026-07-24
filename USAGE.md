@@ -34,7 +34,7 @@ douyin --version
 douyin --help
 ```
 
-原生字幕依赖会在安装时编译 whisper.cpp，因此系统需要 C/C++ 构建工具。网页采集和评论签名需要 `node`：
+网页采集和评论签名需要 `node`：
 
 ```bash
 node --version
@@ -359,51 +359,7 @@ MCP 工具包括：
 
 三个离线洞察工具的输入均为必填字符串数组 `texts`，并可传 `top`（默认 `20`）和 `min_count`（默认 `2`）。其余官方 OpenAPI 工具按各自要求使用 OAuth。
 
-## 9. 本地字幕
-
-基本用法：
-
-```bash
-douyin subtitle video.mp4 --language zh
-douyin subtitle voice.mp3 --format txt
-douyin subtitle meeting.wav --format vtt
-douyin subtitle *.mp4 --output subtitles/
-```
-
-支持 `srt`、`vtt`、`txt` 和 `json`。默认输出到输入文件旁边，并保留文件名。
-
-模型别名包括 `tiny`、`base`、`small`、`medium`、`large-v3` 和 `turbo`。首次使用会下载对应 GGML 模型：
-
-```bash
-douyin subtitle video.mp4 --model small --language zh
-```
-
-只使用本地模型：
-
-```bash
-douyin subtitle video.mp4 \
-  --model ./ggml-small.bin \
-  --local-files-only
-```
-
-指定缓存目录和 CPU：
-
-```bash
-douyin subtitle video.mp4 \
-  --model-cache-dir ./models \
-  --device cpu
-```
-
-Linux/Windows CUDA 版本：
-
-```bash
-cargo install douyin-cli --locked --features cuda --force
-douyin subtitle video.mp4 --device cuda --language zh
-```
-
-macOS 构建默认启用 Metal。
-
-## 10. 配置、环境变量与退出
+## 9. 配置、环境变量与退出
 
 配置路径：
 
@@ -426,7 +382,7 @@ douyin auth cookie-logout
 douyin auth logout
 ```
 
-## 11. 故障排查
+## 10. 故障排查
 
 ```bash
 # 查看所有公开命令
