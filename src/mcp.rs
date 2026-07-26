@@ -3,6 +3,7 @@ use std::io::{self, BufRead, Write};
 
 use serde_json::{Map, Value, json};
 
+use crate::err;
 use crate::insights::{self, TextRecord};
 use crate::openapi::{OpenApiClient, RequestSpec, im_message_body};
 use crate::settings;
@@ -14,7 +15,7 @@ pub fn run_stdio() -> Result<(), String> {
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
     for line in stdin.lock().lines() {
-        let line = line.map_err(|error| error.to_string())?;
+        let line = line.map_err(err)?;
         if line.trim().is_empty() {
             continue;
         }
@@ -491,9 +492,9 @@ fn error_response(id: Value, code: i64, message: &str) -> Value {
 }
 
 fn write_message(writer: &mut impl Write, value: &Value) -> Result<(), String> {
-    serde_json::to_writer(&mut *writer, value).map_err(|error| error.to_string())?;
-    writer.write_all(b"\n").map_err(|error| error.to_string())?;
-    writer.flush().map_err(|error| error.to_string())
+    serde_json::to_writer(&mut *writer, value).map_err(err)?;
+    writer.write_all(b"\n").map_err(err)?;
+    writer.flush().map_err(err)
 }
 
 #[cfg(test)]

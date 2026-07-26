@@ -1,7 +1,7 @@
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use serde_json::{Value, json};
 
-use crate::{api, auth, comments, crawler, insights, mcp, obscura, settings, stats};
+use crate::{api, auth, comments, crawler, err, insights, mcp, obscura, settings, stats};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -63,9 +63,7 @@ pub fn run() -> Result<(), String> {
         Some(Command::Stats(args)) => stats::run(args),
         None if cli.crawl.should_run() => crawler::run(cli.crawl),
         None => {
-            Cli::command()
-                .print_long_help()
-                .map_err(|error| error.to_string())?;
+            Cli::command().print_long_help().map_err(err)?;
             println!();
             Ok(())
         }
@@ -78,7 +76,7 @@ fn run_obscura(command: ObscuraCommand) -> Result<(), String> {
             print_json(&obscura::manifest(VERSION, &settings::settings_file()))
         }
         ObscuraCommand::Status { binary } => {
-            let data = settings::load().map_err(|error| error.to_string())?;
+            let data = settings::load().map_err(err)?;
             let openapi = settings::openapi(&data);
             let authorized = !string_value(&openapi, "accessToken").is_empty()
                 && !string_value(&openapi, "openId").is_empty();
@@ -105,9 +103,6 @@ fn string_value<'a>(values: &'a serde_json::Map<String, Value>, key: &str) -> &'
 }
 
 fn print_json(value: &Value) -> Result<(), String> {
-    println!(
-        "{}",
-        serde_json::to_string_pretty(value).map_err(|error| error.to_string())?
-    );
+    println!("{}", serde_json::to_string_pretty(value).map_err(err)?);
     Ok(())
 }

@@ -1,14 +1,13 @@
 //! Deterministic, offline text-frequency heuristics for content insights.
 
 use std::collections::HashMap;
-use std::fs;
-use std::io::{self, Read};
-use std::path::{Path, PathBuf};
+use std::fmt::Write as _;
+use std::path::PathBuf;
 
 use clap::{Args, ValueEnum};
 use serde_json::{Map, Value, json};
 
-use crate::fs_utils;
+use crate::{err, fs_utils};
 
 const DEFAULT_TOP: usize = 20;
 const DEFAULT_MIN_COUNT: u64 = 2;
@@ -171,16 +170,14 @@ pub struct InsightsArgs {
 }
 
 pub fn run(args: InsightsArgs) -> Result<(), String> {
-    let input = read_input(&args.input)?;
+    let input = fs_utils::read_input(&args.input)?;
     let records = parse_records(&input);
     let result = analyze(&records, args.top, args.min_count);
     let rendered = match args.format {
-        OutputFormat::Json => {
-            serde_json::to_string_pretty(&result).map_err(|error| error.to_string())?
-        }
+        OutputFormat::Json => serde_json::to_string_pretty(&result).map_err(err)?,
         OutputFormat::Markdown => render_markdown(&result),
     };
-    write_output(&rendered, args.output.as_deref())
+    fs_utils::write_output(&rendered, args.output.as_deref())
 }
 
 /// Analyze records without network access or semantic-model inference.
@@ -267,28 +264,6 @@ pub fn parse_records(input: &str) -> Vec<TextRecord> {
         .into_iter()
         .map(|line| TextRecord::new(line.trim(), None))
         .collect()
-}
-
-fn read_input(input: &str) -> Result<String, String> {
-    if input == "-" {
-        let mut text = String::new();
-        io::stdin()
-            .read_to_string(&mut text)
-            .map_err(|error| error.to_string())?;
-        Ok(text)
-    } else {
-        fs::read_to_string(input).map_err(|error| format!("无法读取 {input}: {error}"))
-    }
-}
-
-fn write_output(text: &str, output: Option<&Path>) -> Result<(), String> {
-    if let Some(path) = output {
-        fs_utils::atomic_write(path, format!("{text}\n").as_bytes())
-            .map_err(|error| error.to_string())
-    } else {
-        println!("{text}");
-        Ok(())
-    }
 }
 
 fn extract_value(value: &Value, inherited_weight: u64, records: &mut Vec<TextRecord>) {
@@ -637,7 +612,7 @@ fn render_markdown(result: &Value) -> String {
         ("热梗", "hot_memes"),
         ("需求发现", "demands"),
     ] {
-        output.push_str(&format!("\n## {title}\n\n"));
+        let _ = write!(output, "\n## {title}\n\n");
         let Some(items) = result[key].as_array() else {
             continue;
         };
@@ -658,12 +633,13 @@ fn render_markdown(result: &Value) -> String {
                 .filter(|value| !value.is_empty())
                 .map(|value| format!("；信号：{value}"))
                 .unwrap_or_default();
-            output.push_str(&format!(
-                "- {}（次数：{}，分数：{}{signals}）\n",
+            let _ = writeln!(
+                output,
+                "- {}（次数：{}，分数：{}{signals}）",
                 item["text"].as_str().unwrap_or(""),
                 item["count"],
                 item["score"]
-            ));
+            );
         }
     }
     output

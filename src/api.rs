@@ -4,6 +4,7 @@ use std::io::{self, Write};
 use clap::{Args, Subcommand, ValueEnum};
 use serde_json::{Map, Value, json};
 
+use crate::err;
 use crate::openapi::{OpenApiClient, RequestSpec, im_message_body};
 use crate::settings;
 
@@ -317,7 +318,7 @@ pub fn run(args: ApiArgs) -> Result<(), String> {
             forms,
             headers,
         } => {
-            let data = settings::load().map_err(|error| error.to_string())?;
+            let data = settings::load().map_err(err)?;
             let saved = settings::openapi(&data);
             let token = token.or_else(|| saved_string(&saved, "accessToken"));
             client.request(RequestSpec {
@@ -336,7 +337,7 @@ pub fn run(args: ApiArgs) -> Result<(), String> {
 }
 
 fn resolve_auth(options: AuthOptions) -> Result<(String, String), String> {
-    let data = settings::load().map_err(|error| error.to_string())?;
+    let data = settings::load().map_err(err)?;
     let saved = settings::openapi(&data);
     let token = options
         .token
@@ -410,11 +411,9 @@ fn confirm_write(prompt: &str, yes: bool) -> Result<(), String> {
         return Ok(());
     }
     print!("{prompt} [y/N]: ");
-    io::stdout().flush().map_err(|error| error.to_string())?;
+    io::stdout().flush().map_err(err)?;
     let mut answer = String::new();
-    io::stdin()
-        .read_line(&mut answer)
-        .map_err(|error| error.to_string())?;
+    io::stdin().read_line(&mut answer).map_err(err)?;
     if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
         Ok(())
     } else {
@@ -423,10 +422,7 @@ fn confirm_write(prompt: &str, yes: bool) -> Result<(), String> {
 }
 
 fn print_json(value: &Value) -> Result<(), String> {
-    println!(
-        "{}",
-        serde_json::to_string_pretty(value).map_err(|error| error.to_string())?
-    );
+    println!("{}", serde_json::to_string_pretty(value).map_err(err)?);
     Ok(())
 }
 

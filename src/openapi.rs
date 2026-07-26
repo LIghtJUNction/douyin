@@ -6,6 +6,8 @@ use reqwest::blocking::{Client, RequestBuilder};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::{Map, Value, json};
 
+use crate::err;
+
 pub const BASE_URL: &str = "https://open.douyin.com";
 
 pub struct OpenApiClient {
@@ -31,7 +33,7 @@ impl OpenApiClient {
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(30))
             .build()
-            .map_err(|error| error.to_string())?;
+            .map_err(err)?;
         Ok(Self { base_url, client })
     }
 
@@ -144,9 +146,9 @@ impl OpenApiClient {
             request = request.json(&body);
         }
 
-        let response = request.send().map_err(|error| error.to_string())?;
+        let response = request.send().map_err(err)?;
         let status = response.status();
-        let text = response.text().map_err(|error| error.to_string())?;
+        let text = response.text().map_err(err)?;
         if !status.is_success() {
             return Err(format!(
                 "OpenAPI HTTP 请求失败: {status} {}",
@@ -235,8 +237,8 @@ fn add_headers(
     };
     let mut values = HeaderMap::new();
     for (key, value) in headers {
-        let key = HeaderName::try_from(key).map_err(|error| error.to_string())?;
-        let value = HeaderValue::try_from(value).map_err(|error| error.to_string())?;
+        let key = HeaderName::try_from(key).map_err(err)?;
+        let value = HeaderValue::try_from(value).map_err(err)?;
         values.insert(key, value);
     }
     request = request.headers(values);

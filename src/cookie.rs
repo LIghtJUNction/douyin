@@ -6,8 +6,7 @@ use reqwest::header::{CONTENT_TYPE, COOKIE, HeaderMap, HeaderValue, USER_AGENT};
 use reqwest::redirect::Policy;
 use serde_json::Value;
 
-const USER_AGENT_VALUE: &str =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36";
+use crate::net::DEFAULT_USER_AGENT;
 
 pub fn validate(cookie: &str) -> bool {
     let cookie = cookie.trim();
@@ -37,7 +36,7 @@ pub fn probe(cookie: &str) -> Result<bool, String> {
 
 fn client(cookie: &str) -> Result<Client, String> {
     let mut headers = HeaderMap::new();
-    headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_VALUE));
+    headers.insert(USER_AGENT, HeaderValue::from_static(DEFAULT_USER_AGENT));
     headers.insert(
         COOKIE,
         HeaderValue::from_str(cookie)

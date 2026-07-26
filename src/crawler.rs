@@ -1,19 +1,17 @@
-use std::collections::HashMap;
+use std::collections::HashSet;
+use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use clap::{Args, ValueEnum};
 use percent_encoding::percent_decode_str;
 use reqwest::blocking::Client;
-use reqwest::header::{
-    ACCEPT, ACCEPT_LANGUAGE, COOKIE, HeaderMap, HeaderValue, REFERER, USER_AGENT,
-};
 use serde_json::{Map, Value, json};
 
-use crate::comments::{DEFAULT_USER_AGENT, sign};
-use crate::{cookie, fs_utils, settings};
+use crate::err;
+use crate::net::{self, sign};
+use crate::{fs_utils, settings};
 
 const BASE_URL: &str = "https://www.douyin.com";
 const USER_ID_PREFIX: &str = "MS4wLjABAAAA";
@@ -113,37 +111,21 @@ impl CrawlArgs {
 }
 
 pub fn run(args: CrawlArgs) -> Result<(), String> {
-    let settings_data = settings::load().map_err(|error| error.to_string())?;
-    let cookie_value = args
-        .cookie
-        .clone()
-        .or_else(|| {
-            settings_data
-                .get("cookie")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| "未登录。请先运行: douyin auth cookie-login".to_owned())?;
-    if !cookie::validate(&cookie_value) {
-        return Err("Cookie 格式校验失败".to_owned());
-    }
-    let user_agent = settings_data
-        .get("userAgent")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(DEFAULT_USER_AGENT);
+    let settings_data = settings::load().map_err(err)?;
+    let (cookie_value, user_agent) = net::credentials(&settings_data, args.cookie.as_deref())?;
     let filename_fields = settings_data
         .get("filenameFields")
         .and_then(Value::as_array)
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_owned)
-                .collect()
-        })
-        .unwrap_or_else(|| vec!["id".to_owned(), "title".to_owned()]);
+        .map_or_else(
+            || vec!["id".to_owned(), "title".to_owned()],
+            |values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            },
+        );
     let filename_separator = settings_data
         .get("filenameSeparator")
         .and_then(Value::as_str)
@@ -211,11 +193,9 @@ fn resolve_targets(inputs: &[String], crawl_type: CrawlType) -> Result<Vec<Strin
             "采集类型 {}，请输入目标关键词/URL链接/ID或文件路径: ",
             crawl_type.as_str()
         );
-        io::stderr().flush().map_err(|error| error.to_string())?;
+        io::stderr().flush().map_err(err)?;
         let mut input = String::new();
-        io::stdin()
-            .read_line(&mut input)
-            .map_err(|error| error.to_string())?;
+        io::stdin().read_line(&mut input).map_err(err)?;
         let input = input.trim();
         if input.is_empty() {
             return Err("未输入目标".to_owned());
@@ -259,7 +239,7 @@ fn crawl_target(
         .target_title(&target)
         .unwrap_or_else(|| target.id.clone());
     let directory_name = sanitize_filename(&format!("{}_{}", target.kind.as_str(), title), 100);
-    fs::create_dir_all(&args.output_path).map_err(|error| error.to_string())?;
+    fs::create_dir_all(&args.output_path).map_err(err)?;
     let data_stem = args.output_path.join(directory_name);
     let mut results = if target.kind == CrawlType::Aweme {
         let raw = web.fetch_json(
@@ -308,7 +288,7 @@ fn crawl_pages(
     let mut has_more = true;
     let mut results = Vec::new();
     let mut retries = 0_u8;
-    while has_more && !limit_reached(results.len(), limit) {
+    while has_more && !net::limit_reached(results.len(), limit) {
         let request = list_request(target, cursor, &log_id, args)?;
         let response = match web.fetch_json(request.path, request.params, request.form) {
             Ok(value) => {
@@ -327,16 +307,16 @@ fn crawl_pages(
             .find_map(|key| {
                 response
                     .get(key)
-                    .and_then(value_i64)
+                    .and_then(net::value_i64)
                     .filter(|value| *value != 0)
             })
             .unwrap_or(cursor);
         if log_id.is_empty() {
-            log_id = response
+            response
                 .pointer("/log_pb/impr_id")
                 .and_then(Value::as_str)
                 .unwrap_or("")
-                .to_owned();
+                .clone_into(&mut log_id);
         }
         let items = ["aweme_list", "user_list", "data", "followings", "followers"]
             .into_iter()
@@ -348,7 +328,7 @@ fn crawl_pages(
             })
             .cloned()
             .unwrap_or_default();
-        has_more = truthy(response.get("has_more"));
+        has_more = net::truthy(response.get("has_more"));
         if items.is_empty() {
             if has_more && retries < 9 {
                 retries += 1;
@@ -372,7 +352,7 @@ fn crawl_pages(
             if let Some(parsed) = parsed {
                 results.push(parsed);
             }
-            if limit_reached(results.len(), limit) {
+            if net::limit_reached(results.len(), limit) {
                 has_more = false;
                 break;
             }
@@ -614,29 +594,8 @@ struct WebClient {
 
 impl WebClient {
     fn new(cookie: &str, user_agent: &str) -> Result<Self, String> {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            ACCEPT,
-            HeaderValue::from_static("application/json, text/plain, */*"),
-        );
-        headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("zh-CN,zh;q=0.9"));
-        headers.insert(REFERER, HeaderValue::from_static("https://www.douyin.com/"));
-        headers.insert(
-            USER_AGENT,
-            HeaderValue::from_str(user_agent).map_err(|error| error.to_string())?,
-        );
-        headers.insert(
-            COOKIE,
-            HeaderValue::from_str(cookie).map_err(|error| error.to_string())?,
-        );
-        let client = Client::builder()
-            .default_headers(headers)
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(60))
-            .build()
-            .map_err(|error| error.to_string())?;
         Ok(Self {
-            client,
+            client: net::web_client(cookie, user_agent, 60)?,
             user_agent: user_agent.to_owned(),
         })
     }
@@ -658,7 +617,7 @@ impl WebClient {
                 | "/aweme/v1/web/music/aweme/"
                 | "/aweme/v1/web/user/follower/list/"
         ) {
-            let query = encode_query(&params);
+            let query = net::encode_query(&params);
             params.push((
                 "a_bogus".to_owned(),
                 sign("sign_datail", &query, &self.user_agent)?,
@@ -672,9 +631,9 @@ impl WebClient {
         } else {
             self.client.get(format!("{BASE_URL}{path}")).query(&params)
         };
-        let response = request.send().map_err(|error| error.to_string())?;
+        let response = request.send().map_err(err)?;
         let status = response.status();
-        let text = response.text().map_err(|error| error.to_string())?;
+        let text = response.text().map_err(err)?;
         if !status.is_success() {
             return Err(format!("网页接口请求失败: {status} {text}"));
         }
@@ -683,10 +642,15 @@ impl WebClient {
         }
         let value: Value = serde_json::from_str(&text)
             .map_err(|error| format!("网页接口响应不是 JSON: {error}"))?;
-        if contains_verify_check(&value) {
+        if net::contains_verify_check(&value) {
             return Err("触发验证码，请在浏览器完成验证".to_owned());
         }
-        if value.get("status_code").and_then(value_i64).unwrap_or(0) != 0 {
+        if value
+            .get("status_code")
+            .and_then(net::value_i64)
+            .unwrap_or(0)
+            != 0
+        {
             return Err(format!("网页接口返回失败状态: {text}"));
         }
         Ok(value)
@@ -697,19 +661,15 @@ impl WebClient {
             .get(url)
             .send()
             .map(|response| response.url().clone())
-            .map_err(|error| error.to_string())
+            .map_err(err)
     }
 
     fn get_html(&self, url: &str) -> Result<String, String> {
-        let response = self
-            .client
-            .get(url)
-            .send()
-            .map_err(|error| error.to_string())?;
+        let response = self.client.get(url).send().map_err(err)?;
         if !response.status().is_success() {
             return Err(format!("HTML 请求失败: {}", response.status()));
         }
-        response.text().map_err(|error| error.to_string())
+        response.text().map_err(err)
     }
 
     fn self_uid(&self) -> Result<String, String> {
@@ -730,17 +690,6 @@ impl WebClient {
         };
         extract_escaped_value(&html, key).map(|value| sanitize_filename(&value, 100))
     }
-}
-
-fn encode_query(params: &[(String, String)]) -> String {
-    params
-        .iter()
-        .map(|(key, value)| {
-            let encoded: String = url::form_urlencoded::byte_serialize(value.as_bytes()).collect();
-            format!("{key}={encoded}")
-        })
-        .collect::<Vec<_>>()
-        .join("&")
 }
 
 fn extract_escaped_value(text: &str, key: &str) -> Option<String> {
@@ -769,7 +718,7 @@ fn parse_aweme(item: &Value, crawl_type: CrawlType) -> Option<Value> {
     let kind = item
         .get("aweme_type")
         .or_else(|| item.get("awemeType"))
-        .and_then(value_i64)?;
+        .and_then(net::value_i64)?;
     let mut output = item
         .get("statistics")
         .or_else(|| item.get("stats"))
@@ -952,10 +901,7 @@ fn parse_user(item: &Value) -> Value {
     }
     if let Some(room_id) = item.get("room_id").filter(|value| !value.is_null()) {
         output.insert("live_room_id".to_owned(), room_id.clone());
-        let id = room_id
-            .as_str()
-            .map(str::to_owned)
-            .unwrap_or_else(|| room_id.to_string());
+        let id = value_text(room_id);
         output.insert(
             "live_room_url".to_owned(),
             json!([
@@ -966,7 +912,7 @@ fn parse_user(item: &Value) -> Value {
     }
     if item
         .pointer("/original_musician/music_count")
-        .and_then(value_i64)
+        .and_then(net::value_i64)
         .unwrap_or(0)
         > 0
     {
@@ -982,18 +928,17 @@ fn merge_incremental(results: &mut Vec<Value>, path: &Path) -> Result<(), String
     if !path.exists() {
         return Ok(());
     }
-    let old: Value =
-        serde_json::from_str(&fs::read_to_string(path).map_err(|error| error.to_string())?)
-            .map_err(|error| format!("旧采集数据无效: {error}"))?;
+    let old: Value = serde_json::from_str(&fs::read_to_string(path).map_err(err)?)
+        .map_err(|error| format!("旧采集数据无效: {error}"))?;
     let old_values = old.as_array().cloned().unwrap_or_default();
-    let old_ids: HashMap<_, _> = old_values
+    let old_ids: HashSet<_> = old_values
         .iter()
-        .filter_map(|value| value.get("id").map(|id| (id.to_string(), ())))
+        .filter_map(|value| value.get("id").map(ToString::to_string))
         .collect();
     results.retain(|value| {
         value
             .get("id")
-            .is_none_or(|id| !old_ids.contains_key(&id.to_string()))
+            .is_none_or(|id| !old_ids.contains(&id.to_string()))
     });
     results.extend(old_values);
     Ok(())
@@ -1019,7 +964,7 @@ fn write_download_manifest(
             .iter()
             .filter_map(|value| value.get("sec_uid").and_then(Value::as_str))
         {
-            lines.push_str(&format!("{BASE_URL}/user/{value}\n"));
+            let _ = writeln!(lines, "{BASE_URL}/user/{value}");
         }
     } else {
         for item in results {
@@ -1028,18 +973,22 @@ fn write_download_manifest(
             match item.get("download_addr") {
                 Some(Value::Array(urls)) => {
                     for (index, url) in urls.iter().filter_map(Value::as_str).enumerate() {
-                        lines.push_str(&format!(
-                            "{url}\n dir={}\n out={}_{}.jpeg\n",
+                        let _ = writeln!(
+                            lines,
+                            "{url}\n dir={}\n out={}_{}.jpeg",
                             item_dir.display(),
                             string_field(item, "id"),
                             index + 1
-                        ));
+                        );
                     }
                 }
-                Some(Value::String(url)) => lines.push_str(&format!(
-                    "{url}\n dir={}\n out={filename}.mp4\n",
-                    data_stem.display()
-                )),
+                Some(Value::String(url)) => {
+                    let _ = writeln!(
+                        lines,
+                        "{url}\n dir={}\n out={filename}.mp4",
+                        data_stem.display()
+                    );
+                }
                 _ => {}
             }
             if options.download_cover
@@ -1048,11 +997,12 @@ fn write_download_manifest(
                     .and_then(Value::as_str)
                     .filter(|value| !value.is_empty())
             {
-                lines.push_str(&format!(
-                    "{url}\n dir={}\n out={}_cover.jpg\n",
+                let _ = writeln!(
+                    lines,
+                    "{url}\n dir={}\n out={}_cover.jpg",
                     item_dir.display(),
                     string_field(item, "id")
-                ));
+                );
             }
             if options.download_title {
                 write_title(item, &item_dir)?;
@@ -1060,7 +1010,7 @@ fn write_download_manifest(
         }
     }
     if !lines.is_empty() {
-        fs_utils::atomic_write(manifest, lines.as_bytes()).map_err(|error| error.to_string())?;
+        fs_utils::atomic_write(manifest, lines.as_bytes()).map_err(err)?;
     }
     Ok(())
 }
@@ -1071,13 +1021,13 @@ fn download_items(
     data_stem: &Path,
     options: &DownloadOptions<'_>,
 ) -> Result<(), String> {
-    fs::create_dir_all(data_stem).map_err(|error| error.to_string())?;
+    fs::create_dir_all(data_stem).map_err(err)?;
     for item in results {
         let filename = item_filename(item, options.kind, options.fields, options.separator);
         let item_dir = item_directory(data_stem, item, options.kind, &filename);
         match item.get("download_addr") {
             Some(Value::Array(urls)) => {
-                fs::create_dir_all(&item_dir).map_err(|error| error.to_string())?;
+                fs::create_dir_all(&item_dir).map_err(err)?;
                 for (index, url) in urls.iter().filter_map(Value::as_str).enumerate() {
                     download_file(
                         &web.client,
@@ -1097,7 +1047,7 @@ fn download_items(
                 .and_then(Value::as_str)
                 .filter(|value| !value.is_empty())
         {
-            fs::create_dir_all(&item_dir).map_err(|error| error.to_string())?;
+            fs::create_dir_all(&item_dir).map_err(err)?;
             download_file(
                 &web.client,
                 url,
@@ -1116,7 +1066,7 @@ fn download_file(client: &Client, url: &str, path: &Path) -> Result<(), String> 
         return Ok(());
     }
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        fs::create_dir_all(parent).map_err(err)?;
     }
     eprintln!("下载: {}", path.display());
     let mut response = client
@@ -1130,9 +1080,7 @@ fn download_file(client: &Client, url: &str, path: &Path) -> Result<(), String> 
 }
 
 fn persist_download(reader: &mut impl io::Read, path: &Path) -> Result<(), String> {
-    fs_utils::atomic_copy(reader, path)
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+    fs_utils::atomic_copy(reader, path).map(|_| ()).map_err(err)
 }
 
 fn write_title(item: &Value, directory: &Path) -> Result<(), String> {
@@ -1140,7 +1088,7 @@ fn write_title(item: &Value, directory: &Path) -> Result<(), String> {
         &directory.join(format!("{}_title.txt", string_field(item, "id"))),
         string_field(item, "desc").as_bytes(),
     )
-    .map_err(|error| error.to_string())
+    .map_err(err)
 }
 
 fn item_directory(data_stem: &Path, item: &Value, kind: CrawlType, filename: &str) -> PathBuf {
@@ -1163,7 +1111,7 @@ fn item_filename(item: &Value, kind: CrawlType, fields: &[String], separator: &s
             "title" => string_field(item, "desc").to_owned(),
             "author" => string_field(item, "author_nickname").to_owned(),
             "type" => {
-                if item.get("type").and_then(value_i64) == Some(68) {
+                if item.get("type").and_then(net::value_i64) == Some(68) {
                     "图文".to_owned()
                 } else {
                     "视频".to_owned()
@@ -1171,7 +1119,7 @@ fn item_filename(item: &Value, kind: CrawlType, fields: &[String], separator: &s
             }
             "duration" => item
                 .get("duration")
-                .and_then(value_i64)
+                .and_then(net::value_i64)
                 .map(|ms| format!("{:02}-{:02}", ms / 60_000, (ms / 1_000) % 60))
                 .unwrap_or_default(),
             "music" => string_field(item, "music_title").to_owned(),
@@ -1195,17 +1143,13 @@ fn item_filename(item: &Value, kind: CrawlType, fields: &[String], separator: &s
 }
 
 fn save_json(path: &Path, value: &Value) -> Result<(), String> {
-    let mut text = serde_json::to_string_pretty(value).map_err(|error| error.to_string())?;
+    let mut text = serde_json::to_string_pretty(value).map_err(err)?;
     text.push('\n');
-    fs_utils::atomic_write(path, text.as_bytes()).map_err(|error| error.to_string())
+    fs_utils::atomic_write(path, text.as_bytes()).map_err(err)
 }
 
 fn default_download_root() -> PathBuf {
-    std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("Downloads")
-        .join("douyin")
+    settings::home_dir().join("Downloads").join("douyin")
 }
 
 fn sanitize_filename(text: &str, max_bytes: usize) -> String {
@@ -1243,45 +1187,14 @@ fn last_url(value: Option<&Value>) -> Option<String> {
     value?.as_array()?.last()?.as_str().map(str::to_owned)
 }
 
-fn value_i64(value: &Value) -> Option<i64> {
-    value
-        .as_i64()
-        .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
-        .or_else(|| value.as_str()?.parse().ok())
-}
-
 fn value_text(value: &Value) -> String {
     value
         .as_str()
-        .map(str::to_owned)
-        .unwrap_or_else(|| value.to_string())
+        .map_or_else(|| value.to_string(), str::to_owned)
 }
 
 fn string_field<'a>(value: &'a Value, key: &str) -> &'a str {
     value.get(key).and_then(Value::as_str).unwrap_or("")
-}
-
-fn truthy(value: Option<&Value>) -> bool {
-    value.is_some_and(|value| {
-        value
-            .as_bool()
-            .unwrap_or_else(|| value_i64(value).unwrap_or(0) != 0)
-    })
-}
-
-fn limit_reached(length: usize, limit: usize) -> bool {
-    limit > 0 && length >= limit
-}
-
-fn contains_verify_check(value: &Value) -> bool {
-    match value {
-        Value::Object(values) => values
-            .iter()
-            .any(|(key, value)| key == "verify_check" || contains_verify_check(value)),
-        Value::Array(values) => values.iter().any(contains_verify_check),
-        Value::String(value) => value == "verify_check",
-        _ => false,
-    }
 }
 
 #[cfg(test)]
@@ -1337,7 +1250,7 @@ mod tests {
 
     #[test]
     fn target_auto_detects_and_decodes_search_urls() {
-        let web = WebClient::new("sessionid=test", super::DEFAULT_USER_AGENT).unwrap();
+        let web = WebClient::new("sessionid=test", crate::net::DEFAULT_USER_AGENT).unwrap();
         let target = Target::parse(
             &web,
             "https://www.douyin.com/search/%E4%BA%8C%E6%89%8B%E8%BD%A6",

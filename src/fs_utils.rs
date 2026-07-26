@@ -3,10 +3,33 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::err;
+
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {
     atomic_copy(&mut io::Cursor::new(contents), path).map(|_| ())
+}
+
+/// Reads a whole input source: `-` means stdin, anything else is a file path.
+pub fn read_input(input: &str) -> Result<String, String> {
+    if input == "-" {
+        let mut text = String::new();
+        io::stdin().read_to_string(&mut text).map_err(err)?;
+        Ok(text)
+    } else {
+        fs::read_to_string(input).map_err(|error| format!("无法读取 {input}: {error}"))
+    }
+}
+
+/// Writes text atomically to `path`, or to stdout when no path is given.
+pub fn write_output(text: &str, path: Option<&Path>) -> Result<(), String> {
+    if let Some(path) = path {
+        atomic_write(path, format!("{text}\n").as_bytes()).map_err(err)
+    } else {
+        println!("{text}");
+        Ok(())
+    }
 }
 
 pub fn atomic_copy(reader: &mut impl Read, path: &Path) -> io::Result<u64> {
@@ -43,7 +66,7 @@ fn create_temporary_file(path: &Path) -> io::Result<(PathBuf, File)> {
             .open(&temporary)
         {
             Ok(file) => return Ok((temporary, file)),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(error),
         }
     }

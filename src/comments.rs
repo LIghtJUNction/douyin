@@ -1,22 +1,18 @@
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 
 use clap::{Args, ValueEnum};
 use reqwest::blocking::Client;
-use reqwest::header::{
-    ACCEPT, ACCEPT_LANGUAGE, COOKIE, HeaderMap, HeaderValue, REFERER, USER_AGENT,
-};
 use serde_json::{Map, Value, json};
 
-use crate::{cookie, fs_utils, settings};
+use crate::err;
+use crate::net::{self, sign};
+use crate::{fs_utils, settings};
 
 const BASE_URL: &str = "https://www.douyin.com";
 const COMMENT_LIST: &str = "/aweme/v1/web/comment/list/";
 const COMMENT_REPLIES: &str = "/aweme/v1/web/comment/list/reply/";
-pub(crate) const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36";
-const SIGN_SCRIPT: &str = include_str!("../assets/douyin.js");
 
 #[derive(Debug, Args)]
 pub struct CommentArgs {
@@ -66,43 +62,24 @@ enum OutputFormat {
 }
 
 pub fn run(args: CommentArgs) -> Result<(), String> {
-    let saved = settings::load().map_err(|error| error.to_string())?;
-    let cookie_value = args
-        .cookie
-        .clone()
-        .or_else(|| {
-            saved
-                .get("cookie")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| "未登录。请先运行: douyin auth cookie-login".to_owned())?;
-    if !cookie::validate(&cookie_value) {
-        return Err("Cookie 格式校验失败".to_owned());
-    }
-    let user_agent = saved
-        .get("userAgent")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(DEFAULT_USER_AGENT);
+    let saved = settings::load().map_err(err)?;
+    let (cookie_value, user_agent) = net::credentials(&saved, args.cookie.as_deref())?;
     let aweme_id = extract_aweme_id(&args.target)?;
     let crawler = CommentCrawler::new(&cookie_value, user_agent)?;
     let data = crawler.crawl(&aweme_id, &args)?;
     let output = match args.output_format {
-        OutputFormat::Raw => {
-            serde_json::to_string_pretty(&data).map_err(|error| error.to_string())?
+        OutputFormat::Raw => serde_json::to_string_pretty(&data).map_err(err)?,
+        OutputFormat::ChatmlJson => {
+            serde_json::to_string_pretty(&format_chatml(&data, &args)).map_err(err)?
         }
-        OutputFormat::ChatmlJson => serde_json::to_string_pretty(&format_chatml(&data, &args))
-            .map_err(|error| error.to_string())?,
         OutputFormat::ChatmlJsonl => format_chatml(&data, &args)
             .iter()
             .map(serde_json::to_string)
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| error.to_string())?
+            .map_err(err)?
             .join("\n"),
     };
-    write_output(&output, args.output.as_deref())?;
+    fs_utils::write_output(&output, args.output.as_deref())?;
     if let Some(path) = args.output {
         eprintln!("评论已保存: {}", path.display());
     }
@@ -116,71 +93,28 @@ struct CommentCrawler {
 
 impl CommentCrawler {
     fn new(cookie: &str, user_agent: &str) -> Result<Self, String> {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            ACCEPT,
-            HeaderValue::from_static("application/json, text/plain, */*"),
-        );
-        headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("zh-CN,zh;q=0.9"));
-        headers.insert(REFERER, HeaderValue::from_static("https://www.douyin.com/"));
-        headers.insert(
-            USER_AGENT,
-            HeaderValue::from_str(user_agent).map_err(|error| error.to_string())?,
-        );
-        headers.insert(
-            COOKIE,
-            HeaderValue::from_str(cookie).map_err(|error| error.to_string())?,
-        );
-        let client = Client::builder()
-            .default_headers(headers)
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(30))
-            .build()
-            .map_err(|error| error.to_string())?;
         Ok(Self {
-            client,
+            client: net::web_client(cookie, user_agent, 30)?,
             user_agent: user_agent.to_owned(),
         })
     }
 
     fn crawl(&self, aweme_id: &str, args: &CommentArgs) -> Result<Value, String> {
-        let mut comments = Vec::new();
-        let mut cursor = 0_i64;
-        let mut has_more = true;
-        while has_more && !reached_limit(comments.len(), args.limit) {
-            let page = self.fetch_page(
-                COMMENT_LIST,
-                vec![
-                    ("aweme_id", aweme_id.to_owned()),
-                    ("cursor", cursor.to_string()),
-                    ("count", args.count.to_string()),
-                    ("item_type", "0".to_owned()),
-                ],
-            )?;
-            let values = page
-                .get("comments")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            if values.is_empty() {
-                break;
-            }
-            for raw in values {
-                let mut comment = normalize_comment(&raw);
+        let comments = self.crawl_pages(
+            COMMENT_LIST,
+            vec![("aweme_id", aweme_id.to_owned())],
+            args.limit,
+            args,
+            |raw| {
+                let mut comment = normalize_comment(raw);
                 if args.with_replies {
                     let comment_id = comment.get("id").and_then(Value::as_str).unwrap_or("");
                     comment["replies"] =
                         Value::Array(self.crawl_replies(aweme_id, comment_id, args)?);
                 }
-                comments.push(comment);
-                if reached_limit(comments.len(), args.limit) {
-                    break;
-                }
-            }
-            cursor = page.get("cursor").and_then(Value::as_i64).unwrap_or(0);
-            has_more = truthy(page.get("has_more"));
-            pause(has_more, args.sleep_seconds);
-        }
+                Ok(comment)
+            },
+        )?;
         Ok(json!({"aweme_id": aweme_id, "comments": comments}))
     }
 
@@ -190,20 +124,39 @@ impl CommentCrawler {
         comment_id: &str,
         args: &CommentArgs,
     ) -> Result<Vec<Value>, String> {
-        let mut replies = Vec::new();
+        self.crawl_pages(
+            COMMENT_REPLIES,
+            vec![
+                ("item_id", aweme_id.to_owned()),
+                ("comment_id", comment_id.to_owned()),
+            ],
+            args.reply_limit,
+            args,
+            |raw| Ok(normalize_comment(raw)),
+        )
+    }
+
+    /// Pages through a comment endpoint, applying `normalize` to every raw comment
+    /// until the endpoint reports no more data or `limit` is reached.
+    fn crawl_pages(
+        &self,
+        path: &str,
+        base_params: Vec<(&'static str, String)>,
+        limit: usize,
+        args: &CommentArgs,
+        mut normalize: impl FnMut(&Value) -> Result<Value, String>,
+    ) -> Result<Vec<Value>, String> {
+        let mut items = Vec::new();
         let mut cursor = 0_i64;
         let mut has_more = true;
-        while has_more && !reached_limit(replies.len(), args.reply_limit) {
-            let page = self.fetch_page(
-                COMMENT_REPLIES,
-                vec![
-                    ("item_id", aweme_id.to_owned()),
-                    ("comment_id", comment_id.to_owned()),
-                    ("cursor", cursor.to_string()),
-                    ("count", args.count.to_string()),
-                    ("item_type", "0".to_owned()),
-                ],
-            )?;
+        while has_more && !net::limit_reached(items.len(), limit) {
+            let mut params = base_params.clone();
+            params.extend([
+                ("cursor", cursor.to_string()),
+                ("count", args.count.to_string()),
+                ("item_type", "0".to_owned()),
+            ]);
+            let page = self.fetch_page(path, params)?;
             let values = page
                 .get("comments")
                 .and_then(Value::as_array)
@@ -212,17 +165,17 @@ impl CommentCrawler {
             if values.is_empty() {
                 break;
             }
-            for raw in values {
-                replies.push(normalize_comment(&raw));
-                if reached_limit(replies.len(), args.reply_limit) {
+            for raw in &values {
+                items.push(normalize(raw)?);
+                if net::limit_reached(items.len(), limit) {
                     break;
                 }
             }
-            cursor = page.get("cursor").and_then(Value::as_i64).unwrap_or(0);
-            has_more = truthy(page.get("has_more"));
+            cursor = page.get("cursor").and_then(net::value_i64).unwrap_or(0);
+            has_more = net::truthy(page.get("has_more"));
             pause(has_more, args.sleep_seconds);
         }
-        Ok(replies)
+        Ok(items)
     }
 
     fn fetch_page(&self, path: &str, mut params: Vec<(&str, String)>) -> Result<Value, String> {
@@ -231,15 +184,7 @@ impl CommentCrawler {
             ("aid", "6383".to_owned()),
             ("channel", "channel_pc_web".to_owned()),
         ]);
-        let query = params
-            .iter()
-            .map(|(key, value)| {
-                let encoded: String =
-                    url::form_urlencoded::byte_serialize(value.as_bytes()).collect();
-                format!("{key}={encoded}")
-            })
-            .collect::<Vec<_>>()
-            .join("&");
+        let query = net::encode_query(&params);
         let sign_function = if path.contains("reply") {
             "sign_reply"
         } else {
@@ -252,9 +197,9 @@ impl CommentCrawler {
             .get(format!("{BASE_URL}{path}"))
             .query(&params)
             .send()
-            .map_err(|error| error.to_string())?;
+            .map_err(err)?;
         let status = response.status();
-        let text = response.text().map_err(|error| error.to_string())?;
+        let text = response.text().map_err(err)?;
         if !status.is_success() {
             return Err(format!("评论请求失败: {status} {text}"));
         }
@@ -263,38 +208,18 @@ impl CommentCrawler {
         }
         let data: Value =
             serde_json::from_str(&text).map_err(|error| format!("评论响应不是 JSON: {error}"))?;
-        if contains_verify_check(&data) {
+        if net::contains_verify_check(&data) {
             return Err("触发验证码，请完成验证后再继续".to_owned());
         }
-        if data.get("status_code").and_then(Value::as_i64).unwrap_or(0) != 0 {
+        if data
+            .get("status_code")
+            .and_then(net::value_i64)
+            .unwrap_or(0)
+            != 0
+        {
             return Err(format!("评论接口返回失败状态: {text}"));
         }
         Ok(data)
-    }
-}
-
-pub(crate) fn sign(function: &str, query: &str, user_agent: &str) -> Result<String, String> {
-    let query = serde_json::to_string(query).map_err(|error| error.to_string())?;
-    let user_agent = serde_json::to_string(user_agent).map_err(|error| error.to_string())?;
-    let script = format!("{SIGN_SCRIPT}\nprocess.stdout.write({function}({query}, {user_agent}));");
-    let output = Command::new("node")
-        .arg("-e")
-        .arg(script)
-        .output()
-        .map_err(|error| {
-            format!("无法启动 Node.js 签名运行时: {error}。评论抓取需要 node 命令。")
-        })?;
-    if !output.status.success() {
-        return Err(format!(
-            "生成 a_bogus 失败: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    let value = String::from_utf8(output.stdout).map_err(|error| error.to_string())?;
-    if value.trim().is_empty() {
-        Err("生成 a_bogus 得到空结果".to_owned())
-    } else {
-        Ok(value)
     }
 }
 
@@ -308,10 +233,10 @@ pub fn extract_aweme_id(target: &str) -> Result<String, String> {
         url = Client::builder()
             .timeout(Duration::from_secs(15))
             .build()
-            .map_err(|error| error.to_string())?
+            .map_err(err)?
             .get(url)
             .send()
-            .map_err(|error| error.to_string())?
+            .map_err(err)?
             .url()
             .clone();
     }
@@ -426,7 +351,7 @@ fn metadata(aweme_id: &str, comment: &Value, reply: Option<&Value>) -> Value {
         ),
         (
             "quality_score".to_owned(),
-            json!(digg(comment) + reply.map(digg).unwrap_or(0)),
+            json!(digg(comment) + reply.map_or(0, digg)),
         ),
     ]);
     if let Some(reply) = reply {
@@ -475,50 +400,15 @@ fn digg(value: &Value) -> i64 {
         .unwrap_or(0)
 }
 
-fn truthy(value: Option<&Value>) -> bool {
-    value.is_some_and(|value| {
-        value
-            .as_bool()
-            .unwrap_or_else(|| value.as_i64().unwrap_or(0) != 0)
-    })
-}
-
-fn reached_limit(length: usize, limit: usize) -> bool {
-    limit > 0 && length >= limit
-}
-
 fn pause(has_more: bool, seconds: f64) {
     if has_more && seconds > 0.0 {
         thread::sleep(Duration::from_secs_f64(seconds));
     }
 }
 
-fn contains_verify_check(value: &Value) -> bool {
-    match value {
-        Value::Object(values) => values
-            .iter()
-            .any(|(key, value)| key == "verify_check" || contains_verify_check(value)),
-        Value::Array(values) => values.iter().any(contains_verify_check),
-        Value::String(value) => value == "verify_check",
-        _ => false,
-    }
-}
-
-fn write_output(text: &str, path: Option<&Path>) -> Result<(), String> {
-    if let Some(path) = path {
-        fs_utils::atomic_write(path, format!("{text}\n").as_bytes())
-            .map_err(|error| error.to_string())
-    } else {
-        println!("{text}");
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        CommentArgs, OutputFormat, extract_aweme_id, format_chatml, normalize_comment, sign,
-    };
+    use super::{CommentArgs, OutputFormat, extract_aweme_id, format_chatml, normalize_comment};
     use serde_json::json;
 
     #[test]
@@ -540,24 +430,12 @@ mod tests {
     #[test]
     fn normalizes_comment_fields() {
         let value = normalize_comment(&json!({
-            "cid":"1","text":"你好","create_time":1710000000,"digg_count":3,"reply_comment_total":2,"ip_label":"上海",
+            "cid":"1","text":"你好","create_time":1_710_000_000,"digg_count":3,"reply_comment_total":2,"ip_label":"上海",
             "user":{"uid":"u1","sec_uid":"sec","nickname":"用户","unique_id":"unique"}
         }));
         assert_eq!(value["id"], "1");
         assert_eq!(value["user"]["nickname"], "用户");
         assert_eq!(value["digg_count"], 3);
-    }
-
-    #[test]
-    fn bundled_signer_returns_a_bogus_value() {
-        let value = sign(
-            "sign_datail",
-            "aweme_id=7380000000000000000&device_platform=webapp&aid=6383",
-            super::DEFAULT_USER_AGENT,
-        )
-        .unwrap();
-        assert!(value.ends_with('='));
-        assert!(value.len() > 20);
     }
 
     #[test]

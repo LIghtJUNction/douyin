@@ -12,6 +12,7 @@ use ring::rand::{SecureRandom, SystemRandom};
 use serde_json::{Map, Value, json};
 
 use crate::cookie;
+use crate::err;
 use crate::openapi::{OpenApiClient, RequestSpec};
 use crate::settings;
 
@@ -132,7 +133,7 @@ struct LoginOptions {
 }
 
 fn login(options: LoginOptions) -> Result<(), String> {
-    let data = settings::load().map_err(|error| error.to_string())?;
+    let data = settings::load().map_err(err)?;
     let saved = settings::openapi(&data);
     let client_key = options
         .client_key
@@ -215,7 +216,7 @@ fn login(options: LoginOptions) -> Result<(), String> {
 }
 
 fn exchange_code(code: &str, client_secret: Option<String>) -> Result<(), String> {
-    let data = settings::load().map_err(|error| error.to_string())?;
+    let data = settings::load().map_err(err)?;
     let saved = settings::openapi(&data);
     let client_key = saved_string(&saved, "clientKey")
         .ok_or_else(|| "缺少 client_key，请先运行 douyin auth login".to_owned())?;
@@ -232,7 +233,7 @@ fn exchange_code(code: &str, client_secret: Option<String>) -> Result<(), String
 }
 
 fn refresh() -> Result<(), String> {
-    let data = settings::load().map_err(|error| error.to_string())?;
+    let data = settings::load().map_err(err)?;
     let saved = settings::openapi(&data);
     let client_key = saved_string(&saved, "clientKey");
     let refresh_token = saved_string(&saved, "refreshToken");
@@ -247,7 +248,7 @@ fn refresh() -> Result<(), String> {
 }
 
 fn status(json_output: bool) -> Result<(), String> {
-    let data = settings::load().map_err(|error| error.to_string())?;
+    let data = settings::load().map_err(err)?;
     let saved = settings::openapi(&data);
     let token = saved_string(&saved, "accessToken");
     let open_id = saved_string(&saved, "openId");
@@ -309,15 +310,15 @@ fn cookie_login(value: &str) -> Result<(), String> {
     if !cookie::validate(value) {
         return Err("Cookie 格式校验失败，未保存".to_owned());
     }
-    let mut data = settings::load().map_err(|error| error.to_string())?;
+    let mut data = settings::load().map_err(err)?;
     data["cookie"] = json!(value);
-    settings::save(&data).map_err(|error| error.to_string())?;
+    settings::save(&data).map_err(err)?;
     println!("Cookie 已保存: {}", settings::settings_file().display());
     Ok(())
 }
 
 fn cookie_status(offline: bool) -> Result<(), String> {
-    let data = settings::load().map_err(|error| error.to_string())?;
+    let data = settings::load().map_err(err)?;
     let value = data
         .get("cookie")
         .and_then(Value::as_str)
@@ -354,21 +355,21 @@ fn cookie_status(offline: bool) -> Result<(), String> {
 }
 
 fn cookie_logout() -> Result<(), String> {
-    let mut data = settings::load().map_err(|error| error.to_string())?;
+    let mut data = settings::load().map_err(err)?;
     data["cookie"] = json!("");
-    settings::save(&data).map_err(|error| error.to_string())?;
+    settings::save(&data).map_err(err)?;
     println!("已清除 Cookie");
     Ok(())
 }
 
 fn save_openapi(updates: Map<String, Value>) -> Result<(), String> {
-    let mut data = settings::load().map_err(|error| error.to_string())?;
+    let mut data = settings::load().map_err(err)?;
     let openapi = data
         .get_mut("openapi")
         .and_then(Value::as_object_mut)
         .ok_or_else(|| "openapi 配置格式无效".to_owned())?;
     openapi.extend(updates);
-    settings::save(&data).map_err(|error| error.to_string())
+    settings::save(&data).map_err(err)
 }
 
 fn extract_token_fields(data: &Value) -> Map<String, Value> {
@@ -418,7 +419,7 @@ fn random_state() -> Result<String, String> {
 }
 
 fn print_qr(value: &str) -> Result<(), String> {
-    let code = QrCode::new(value.as_bytes()).map_err(|error| error.to_string())?;
+    let code = QrCode::new(value.as_bytes()).map_err(err)?;
     let width = code.width();
     println!();
     for y in (0..width).step_by(2) {
@@ -447,9 +448,7 @@ fn wait_for_code(
 ) -> Result<String, String> {
     let listener = TcpListener::bind((host, port))
         .map_err(|_| format!("无法监听 {host}:{port}，请换一个 --callback-port"))?;
-    listener
-        .set_nonblocking(true)
-        .map_err(|error| error.to_string())?;
+    listener.set_nonblocking(true).map_err(err)?;
     let started = Instant::now();
     while started.elapsed() < timeout {
         match listener.accept() {
@@ -463,15 +462,13 @@ fn wait_for_code(
     Err("等待授权回调超时，未获取到 code".to_owned())
 }
 
+const MAX_CALLBACK_REQUEST_BYTES: usize = 16 * 1024;
+
 fn handle_callback(stream: &mut TcpStream, expected_state: Option<&str>) -> Result<String, String> {
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
-        .map_err(|error| error.to_string())?;
-    let mut buffer = [0_u8; 8192];
-    let count = stream
-        .read(&mut buffer)
-        .map_err(|error| error.to_string())?;
-    let request = String::from_utf8_lossy(&buffer[..count]);
+        .map_err(err)?;
+    let request = read_request_head(stream)?;
     let target = request
         .lines()
         .next()
@@ -505,6 +502,24 @@ fn handle_callback(stream: &mut TcpStream, expected_state: Option<&str>) -> Resu
     Ok(code.to_owned())
 }
 
+/// Reads until the end of the HTTP request headers (`\r\n\r\n`) instead of assuming
+/// they arrive in a single `read`, which TCP does not guarantee.
+fn read_request_head(stream: &mut TcpStream) -> Result<String, String> {
+    let mut buffer = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    while !buffer.windows(4).any(|window| window == b"\r\n\r\n") {
+        if buffer.len() >= MAX_CALLBACK_REQUEST_BYTES {
+            return Err("授权回调请求过大".to_owned());
+        }
+        let count = stream.read(&mut chunk).map_err(err)?;
+        if count == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&chunk[..count]);
+    }
+    Ok(String::from_utf8_lossy(&buffer).into_owned())
+}
+
 fn send_html(stream: &mut TcpStream, status: u16, body: &str) -> Result<(), String> {
     let content =
         format!("<!doctype html><meta charset='utf-8'><title>Douyin CLI</title><p>{body}</p>");
@@ -514,14 +529,11 @@ fn send_html(stream: &mut TcpStream, status: u16, body: &str) -> Result<(), Stri
         "HTTP/1.1 {status} {reason}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{content}",
         content.len()
     )
-    .map_err(|error| error.to_string())
+    .map_err(err)
 }
 
 fn print_json(value: &Value) -> Result<(), String> {
-    println!(
-        "{}",
-        serde_json::to_string_pretty(value).map_err(|error| error.to_string())?
-    );
+    println!("{}", serde_json::to_string_pretty(value).map_err(err)?);
     Ok(())
 }
 

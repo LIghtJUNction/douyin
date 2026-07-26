@@ -2,14 +2,13 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
-use std::io::{self, Read};
-use std::path::{Path, PathBuf};
+use std::fmt::Write as _;
+use std::path::PathBuf;
 
 use clap::{Args, ValueEnum};
 use serde_json::{Map, Value, json};
 
-use crate::fs_utils;
+use crate::{err, fs_utils};
 
 const SCORE_FORMULA: &str = "100 × (0.35×likes_norm + 0.20×comments_norm + 0.20×collects_norm + 0.25×shares_norm), norm=ln(1+x)/ln(1+max)";
 
@@ -112,15 +111,13 @@ struct GroupAggregate {
 }
 
 pub fn run(args: StatsArgs) -> Result<(), String> {
-    let input = read_input(&args.input)?;
+    let input = fs_utils::read_input(&args.input)?;
     let result = analyze_json(&input, args.author.as_deref(), args.sort, args.top)?;
     let rendered = match args.format {
-        OutputFormat::Json => {
-            serde_json::to_string_pretty(&result).map_err(|error| error.to_string())?
-        }
+        OutputFormat::Json => serde_json::to_string_pretty(&result).map_err(err)?,
         OutputFormat::Markdown => render_markdown(&result),
     };
-    write_output(&rendered, args.output.as_deref())
+    fs_utils::write_output(&rendered, args.output.as_deref())
 }
 
 /// Analyze crawler JSON metadata without reading or interpreting media content.
@@ -179,28 +176,6 @@ pub fn analyze_json(
         }).collect::<Vec<_>>(),
         "limitations": "仅统计采集元数据；不分析媒体画面、声音、Hook、镜头、字幕。缺少播放量，因此 score 不是互动率。"
     }))
-}
-
-fn read_input(input: &str) -> Result<String, String> {
-    if input == "-" {
-        let mut text = String::new();
-        io::stdin()
-            .read_to_string(&mut text)
-            .map_err(|error| error.to_string())?;
-        Ok(text)
-    } else {
-        fs::read_to_string(input).map_err(|error| format!("无法读取 {input}: {error}"))
-    }
-}
-
-fn write_output(text: &str, output: Option<&Path>) -> Result<(), String> {
-    if let Some(path) = output {
-        fs_utils::atomic_write(path, format!("{text}\n").as_bytes())
-            .map_err(|error| error.to_string())
-    } else {
-        println!("{text}");
-        Ok(())
-    }
 }
 
 fn parse_items(value: &Value) -> Vec<Item> {
@@ -479,7 +454,7 @@ fn saturated_sum(values: impl Iterator<Item = u64>) -> u64 {
 fn average_values(values: &[u64]) -> f64 {
     let total = values
         .iter()
-        .fold(0_u128, |sum, value| sum.saturating_add(*value as u128));
+        .fold(0_u128, |sum, value| sum.saturating_add(u128::from(*value)));
     average_wide(total, values.len())
 }
 
@@ -499,7 +474,7 @@ fn median(values: &[u64]) -> f64 {
     sorted.sort_unstable();
     let middle = sorted.len() / 2;
     if sorted.len().is_multiple_of(2) {
-        (sorted[middle - 1] as f64 + sorted[middle] as f64) / 2.0
+        f64::midpoint(sorted[middle - 1] as f64, sorted[middle] as f64)
     } else {
         sorted[middle] as f64
     }
@@ -586,7 +561,7 @@ fn add_to_group(group: &mut GroupAggregate, item: &ScoredItem) {
     group.interactions = group.interactions.saturating_add(item.interactions);
     group.interactions_sum = group
         .interactions_sum
-        .saturating_add(item.interactions as u128);
+        .saturating_add(u128::from(item.interactions));
 }
 
 fn topic_stats(items: &[ScoredItem]) -> Vec<Value> {
@@ -654,23 +629,25 @@ fn render_markdown(result: &Value) -> String {
         ("互动合计", "interactions"),
     ] {
         let metric = &result["summary"][key];
-        output.push_str(&format!(
-            "| {label} | {} | {} | {} |\n",
+        let _ = writeln!(
+            output,
+            "| {label} | {} | {} | {} |",
             display_json(&metric["total"]),
             display_json(&metric["average"]),
             display_json(&metric["median"])
-        ));
+        );
     }
     let duration = &result["summary"]["duration_ms"];
-    output.push_str(&format!(
-        "\n时长（毫秒）：平均 {}，中位数 {}，最小 {}，最大 {}。\n\n发布时间：最早 {}，最晚 {}。\n",
+    let _ = writeln!(
+        output,
+        "\n时长（毫秒）：平均 {}，中位数 {}，最小 {}，最大 {}。\n\n发布时间：最早 {}，最晚 {}。",
         display_json(&duration["average"]),
         display_json(&duration["median"]),
         display_json(&duration["min"]),
         display_json(&duration["max"]),
         display_json(&result["summary"]["published_time"]["earliest"]),
         display_json(&result["summary"]["published_time"]["latest"])
-    ));
+    );
 
     output.push_str("\n## 字段覆盖\n\n| 字段 | 有效记录数 |\n|---|---:|\n");
     for (label, key) in [
@@ -681,10 +658,7 @@ fn render_markdown(result: &Value) -> String {
         ("duration_ms", "duration_ms"),
         ("published_time", "published_time"),
     ] {
-        output.push_str(&format!(
-            "| {label} | {} |\n",
-            result["metric_coverage"][key]
-        ));
+        let _ = writeln!(output, "| {label} | {} |", result["metric_coverage"][key]);
     }
 
     output.push_str("\n## 时长分桶\n\n| 时长 | 作品数 | 平均互动 |\n|---|---:|---:|\n");
@@ -694,10 +668,11 @@ fn render_markdown(result: &Value) -> String {
         ("300 秒及以上", "over_300s"),
     ] {
         let bucket = &result["duration_buckets"][key];
-        output.push_str(&format!(
-            "| {label} | {} | {} |\n",
+        let _ = writeln!(
+            output,
+            "| {label} | {} | {} |",
             bucket["count"], bucket["average_interactions"]
-        ));
+        );
     }
 
     output.push_str(
