@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 
 use crate::err;
 use crate::insights::{self, TextRecord};
-use crate::openapi::{OpenApiClient, RequestSpec, im_message_body};
+use crate::openapi::{im_message_body, OpenApiClient, RequestSpec};
 use crate::settings;
 
 const PROTOCOL_VERSION: &str = "2025-11-25";
@@ -104,19 +104,25 @@ fn tools() -> Vec<Value> {
         tool("auth_status", "查看本机是否已保存抖音开放平台授权信息。", json!({"type":"object","properties":{}}), true),
         tool("userinfo", "获取官方授权用户信息。", auth_schema(json!({})), true),
         tool("comment_list", "获取官方接口中的视频评论列表。", auth_schema(json!({
-            "item_id":{"type":"string"}, "cursor":{"type":"integer","default":0}, "count":{"type":"integer","default":20}
+            "item_id":{"type":"string"}, "cursor":{"type":"integer","default":0,"minimum":0},
+            "count":{"type":"integer","default":20,"minimum":1,"maximum":20},
+            "sort_type":{"type":"integer","enum":[0,1,2]}
         })).with_required(&["item_id"]), true),
         tool("comment_replies", "获取官方接口中的评论回复列表。", auth_schema(json!({
-            "item_id":{"type":"string"}, "comment_id":{"type":"string"}, "cursor":{"type":"integer","default":0}, "count":{"type":"integer","default":20}
+            "item_id":{"type":"string"}, "comment_id":{"type":"string"}, "cursor":{"type":"integer","default":0,"minimum":0},
+            "count":{"type":"integer","default":20,"minimum":1,"maximum":20},
+            "sort_type":{"type":"integer","enum":[0,1,2]}
         })).with_required(&["item_id", "comment_id"]), true),
         tool("comment_reply", "通过官方 OpenAPI 回复视频或评论。", auth_schema(json!({
-            "item_id":{"type":"string"}, "content":{"type":"string"}, "comment_id":{"type":"string"}
+            "item_id":{"type":"string"}, "content":{"type":"string","minLength":1,"maxLength":100}, "comment_id":{"type":"string"}
         })).with_required(&["item_id", "content"]), false),
-        tool("im_message_send", "通过企业号 OpenAPI 发送私信消息。", auth_schema(json!({
-            "to_user_id":{"type":"string"}, "message_type":{"type":"string","enum":["text","image","video","card"],"default":"text"},
-            "text":{"type":"string"}, "media_id":{"type":"string"}, "item_id":{"type":"string"}, "card_id":{"type":"string"},
-            "persona_id":{"type":"string"}, "client_msg_id":{"type":"string"}
-        })).with_required(&["to_user_id"]), false),
+        tool("im_message_send", "通过官方私信接口回复或首次进入会话。", auth_schema(json!({
+            "to_user_id":{"type":"string"},
+            "scene":{"type":"string","enum":["im_reply_msg","im_enter_direct_msg"],"default":"im_reply_msg"},
+            "msg_id":{"type":"string"}, "conversation_id":{"type":"string"},
+            "message_type":{"type":"string","enum":["text","image","video"],"default":"text"},
+            "text":{"type":"string","minLength":1,"maxLength":1000}, "media_id":{"type":"string"}, "item_id":{"type":"string"}
+        })).with_required(&["to_user_id", "msg_id", "conversation_id"]), false),
         tool("openapi_request", "调用任意官方 OpenAPI 路径。", json!({
             "type":"object",
             "properties":{
@@ -222,51 +228,66 @@ fn execute_tool(name: &str, args: &Map<String, Value>) -> Result<Value, ToolErro
         }
         "comment_list" => {
             let (token, open_id) = resolve_auth(args)?;
+            let mut params = HashMap::from([
+                ("open_id".to_owned(), open_id),
+                ("item_id".to_owned(), required_string(args, "item_id")?),
+                (
+                    "cursor".to_owned(),
+                    bounded_integer(args, "cursor", 0, 0, i64::MAX)?.to_string(),
+                ),
+                (
+                    "count".to_owned(),
+                    bounded_integer(args, "count", 20, 1, 20)?.to_string(),
+                ),
+            ]);
+            insert_optional_integer(args, &mut params, "sort_type", 0, 2)?;
             request(
                 &client,
                 "GET",
                 "/item/comment/list/",
                 &token,
-                Some(HashMap::from([
-                    ("open_id".to_owned(), open_id),
-                    ("item_id".to_owned(), required_string(args, "item_id")?),
-                    ("cursor".to_owned(), integer(args, "cursor", 0).to_string()),
-                    ("count".to_owned(), integer(args, "count", 20).to_string()),
-                ])),
+                Some(params),
                 None,
             )
         }
         "comment_replies" => {
             let (token, open_id) = resolve_auth(args)?;
+            let mut params = HashMap::from([
+                ("open_id".to_owned(), open_id),
+                ("item_id".to_owned(), required_string(args, "item_id")?),
+                (
+                    "comment_id".to_owned(),
+                    required_string(args, "comment_id")?,
+                ),
+                (
+                    "cursor".to_owned(),
+                    bounded_integer(args, "cursor", 0, 0, i64::MAX)?.to_string(),
+                ),
+                (
+                    "count".to_owned(),
+                    bounded_integer(args, "count", 20, 1, 20)?.to_string(),
+                ),
+            ]);
+            insert_optional_integer(args, &mut params, "sort_type", 0, 2)?;
             request(
                 &client,
                 "GET",
                 "/item/comment/reply/list/",
                 &token,
-                Some(HashMap::from([
-                    ("open_id".to_owned(), open_id),
-                    ("item_id".to_owned(), required_string(args, "item_id")?),
-                    (
-                        "comment_id".to_owned(),
-                        required_string(args, "comment_id")?,
-                    ),
-                    ("cursor".to_owned(), integer(args, "cursor", 0).to_string()),
-                    ("count".to_owned(), integer(args, "count", 20).to_string()),
-                ])),
+                Some(params),
                 None,
             )
         }
         "comment_reply" => {
             let (token, open_id) = resolve_auth(args)?;
+            let content = required_string(args, "content")?;
+            validate_text(&content, "content", 100, false)?;
             let mut body = Map::from_iter([
                 (
                     "item_id".to_owned(),
                     json!(required_string(args, "item_id")?),
                 ),
-                (
-                    "content".to_owned(),
-                    json!(required_string(args, "content")?),
-                ),
+                ("content".to_owned(), json!(content)),
             ]);
             if let Some(value) = optional_string(args, "comment_id") {
                 body.insert("comment_id".to_owned(), json!(value));
@@ -284,26 +305,51 @@ fn execute_tool(name: &str, args: &Map<String, Value>) -> Result<Value, ToolErro
             let (token, open_id) = resolve_auth(args)?;
             let message_type =
                 optional_string(args, "message_type").unwrap_or_else(|| "text".to_owned());
-            let (key, source, error) = match message_type.as_str() {
-                "text" => ("text", "text", "message_type=text 需要 text"),
-                "image" => ("media_id", "media_id", "message_type=image 需要 media_id"),
-                "video" => ("item_id", "item_id", "message_type=video 需要 item_id"),
-                "card" => ("card_id", "card_id", "message_type=card 需要 card_id"),
+            let (code, kind, key, source, error) = match message_type.as_str() {
+                "text" => (1, "text", "text", "text", "message_type=text 需要 text"),
+                "image" => (
+                    2,
+                    "image",
+                    "media_id",
+                    "media_id",
+                    "message_type=image 需要 media_id",
+                ),
+                "video" => (
+                    3,
+                    "video",
+                    "item_id",
+                    "item_id",
+                    "message_type=video 需要 item_id",
+                ),
                 value => return Err(ToolError::Execution(format!("不支持的私信类型: {value}"))),
             };
             let value = optional_string(args, source)
                 .ok_or_else(|| ToolError::Execution(error.to_owned()))?;
+            if message_type == "text" {
+                validate_text(&value, "text", 1_000, true)?;
+            }
+            let scene = optional_string(args, "scene").unwrap_or_else(|| "im_reply_msg".to_owned());
+            if !matches!(scene.as_str(), "im_reply_msg" | "im_enter_direct_msg") {
+                return Err(ToolError::Execution(format!("不支持的私信场景: {scene}")));
+            }
+            let content = Value::Object(Map::from_iter([
+                ("msg_type".to_owned(), json!(code)),
+                (
+                    kind.to_owned(),
+                    Value::Object(Map::from_iter([(key.to_owned(), json!(value))])),
+                ),
+            ]));
             let body = im_message_body(
                 &required_string(args, "to_user_id")?,
-                &message_type,
-                json!({key: value}),
-                optional_string(args, "persona_id").as_deref(),
-                optional_string(args, "client_msg_id").as_deref(),
+                &scene,
+                &required_string(args, "msg_id")?,
+                &required_string(args, "conversation_id")?,
+                content,
             );
             request(
                 &client,
                 "POST",
-                "/enterprise/im/message/send/",
+                "/im/send/msg/",
                 &token,
                 Some(HashMap::from([("open_id".to_owned(), open_id)])),
                 Some(body),
@@ -421,8 +467,62 @@ fn saved_string(args: &Map<String, Value>, key: &str) -> Option<String> {
     optional_string(args, key)
 }
 
-fn integer(args: &Map<String, Value>, key: &str, default: i64) -> i64 {
-    args.get(key).and_then(Value::as_i64).unwrap_or(default)
+fn bounded_integer(
+    args: &Map<String, Value>,
+    key: &str,
+    default: i64,
+    minimum: i64,
+    maximum: i64,
+) -> Result<i64, ToolError> {
+    let value = args
+        .get(key)
+        .map(|value| {
+            value
+                .as_i64()
+                .ok_or_else(|| ToolError::Execution(format!("{key} 必须是整数")))
+        })
+        .transpose()?
+        .unwrap_or(default);
+    if !(minimum..=maximum).contains(&value) {
+        return Err(ToolError::Execution(format!(
+            "{key} 必须在 {minimum}..={maximum} 范围内"
+        )));
+    }
+    Ok(value)
+}
+
+fn insert_optional_integer(
+    args: &Map<String, Value>,
+    output: &mut HashMap<String, String>,
+    key: &str,
+    minimum: i64,
+    maximum: i64,
+) -> Result<(), ToolError> {
+    if args.contains_key(key) {
+        output.insert(
+            key.to_owned(),
+            bounded_integer(args, key, minimum, minimum, maximum)?.to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_text(
+    value: &str,
+    key: &str,
+    max_chars: usize,
+    forbid_links: bool,
+) -> Result<(), ToolError> {
+    let length = value.chars().count();
+    if length == 0 || length > max_chars {
+        return Err(ToolError::Execution(format!(
+            "{key} 长度必须为 1..={max_chars} 个字符（当前 {length}）"
+        )));
+    }
+    if forbid_links && (value.contains("http://") || value.contains("https://")) {
+        return Err(ToolError::Execution(format!("{key} 不能包含链接")));
+    }
+    Ok(())
 }
 
 fn non_negative_integer(
@@ -500,25 +600,25 @@ fn write_message(writer: &mut impl Write, value: &Value) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::handle_message;
+    use crate::test_support::present;
     use serde_json::json;
 
     #[test]
     fn initialize_negotiates_supported_version() {
-        let response = handle_message(&json!({
+        let response = present(handle_message(&json!({
             "jsonrpc":"2.0", "id":1, "method":"initialize",
             "params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}
-        })).unwrap();
+        })));
         assert_eq!(response["result"]["protocolVersion"], "2025-11-25");
         assert_eq!(response["result"]["serverInfo"]["name"], "douyin");
     }
 
     #[test]
     fn tools_list_exposes_openapi_and_offline_insights_tools() {
-        let response =
-            handle_message(&json!({"jsonrpc":"2.0","id":2,"method":"tools/list"})).unwrap();
-        let names: Vec<_> = response["result"]["tools"]
-            .as_array()
-            .unwrap()
+        let response = present(handle_message(
+            &json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
+        ));
+        let names: Vec<_> = present(response["result"]["tools"].as_array())
             .iter()
             .filter_map(|tool| tool["name"].as_str())
             .collect();
@@ -536,17 +636,39 @@ mod tests {
         ] {
             assert!(names.contains(&expected));
         }
+
+        let Some(tools) = response["result"]["tools"].as_array() else {
+            panic!("tools/list result must contain an array");
+        };
+        let Some(direct_message) = tools.iter().find(|tool| tool["name"] == "im_message_send")
+        else {
+            panic!("im_message_send tool must be advertised");
+        };
+        assert_eq!(
+            direct_message["inputSchema"]["required"],
+            json!(["to_user_id", "msg_id", "conversation_id"])
+        );
+        assert_eq!(
+            direct_message["inputSchema"]["properties"]["message_type"]["enum"],
+            json!(["text", "image", "video"])
+        );
+        let Some(comment_list) = tools.iter().find(|tool| tool["name"] == "comment_list") else {
+            panic!("comment_list tool must be advertised");
+        };
+        assert_eq!(
+            comment_list["inputSchema"]["properties"]["count"]["maximum"],
+            20
+        );
     }
 
     #[test]
     fn offline_insights_tool_call_does_not_require_authorization() {
-        let response = handle_message(&json!({
+        let response = present(handle_message(&json!({
             "jsonrpc":"2.0","id":5,"method":"tools/call","params":{
                 "name":"demand_discovery",
                 "arguments":{"texts":["求链接","求链接"],"top":5,"min_count":2}
             }
-        }))
-        .unwrap();
+        })));
         assert_eq!(
             response["result"]["structuredContent"]["demands"][0]["text"],
             "求链接"
@@ -556,21 +678,19 @@ mod tests {
 
     #[test]
     fn unknown_tool_is_protocol_error() {
-        let response = handle_message(&json!({
+        let response = present(handle_message(&json!({
             "jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"missing","arguments":{}}
-        }))
-        .unwrap();
+        })));
         assert_eq!(response["error"]["code"], -32602);
     }
 
     #[test]
     fn batch_omits_notification_responses() {
-        let response = handle_message(&json!([
+        let response = present(handle_message(&json!([
             {"jsonrpc":"2.0","method":"notifications/initialized"},
             {"jsonrpc":"2.0","id":4,"method":"ping"}
-        ]))
-        .unwrap();
-        assert_eq!(response.as_array().unwrap().len(), 1);
+        ])));
+        assert_eq!(present(response.as_array()).len(), 1);
         assert_eq!(response[0]["id"], 4);
     }
 }

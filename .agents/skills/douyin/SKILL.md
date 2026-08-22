@@ -1,29 +1,28 @@
 ---
 name: douyin
-description: "Use this skill when installing, upgrading, developing, testing, packaging, or troubleshooting this repository's Rust douyin CLI, including OAuth/OpenAPI, Cookie web workflows, MCP, crawling, comments, and downloads."
+description: Develop, install, test, package, troubleshoot, or operate this Rust douyin CLI, including Cookie web crawls, OAuth/OpenAPI, comments, downloads, MCP, and Obscura.
 ---
 
 # Douyin Rust CLI
 
-Treat this repository as a Rust-only CLI. Keep `Cargo.toml` and committed
-`Cargo.lock` as the build source. Do not reintroduce Python packaging.
+Treat this repository as a Rust-only CLI. `Cargo.toml` and committed `Cargo.lock` are the build source; do not reintroduce Python packaging.
 
-## Inspect Before Acting
+## Discover Before Acting
 
-Confirm the current command surface and worktree:
+Use current Clap help rather than memory:
 
 ```bash
 git status -sb
 cargo run --locked --offline -- --help
 cargo run --locked --offline -- auth --help
 cargo run --locked --offline -- api --help
+cargo run --locked --offline -- comment --help
+cargo run --locked --offline -- obscura --help
 ```
 
-Keep every command visible in the applicable Clap help output.
+If docs and help disagree, inspect `src/cli.rs` and the owning Rust module, then update the docs. Keep every public command visible in applicable help.
 
-## Install Or Upgrade
-
-Use crates.io for users and `--path .` for repository development:
+## Install or Upgrade
 
 ```bash
 cargo install douyin-cli --locked
@@ -32,17 +31,15 @@ cargo install --path . --locked
 douyin --version
 ```
 
-Require Rust 1.88 or newer. Require `node` only for webpage crawling and
-comments because those flows use the bundled JavaScript signer.
+Require Rust 1.88+. Node is needed only by webpage crawling/comment flows that use the bundled JavaScript signer.
 
-## Select Authentication Correctly
+## Route Authentication
 
-- Use Cookie auth for search, webpage crawling, downloads, and `douyin comment`.
-- Use official OAuth for `douyin api` and `douyin mcp`.
-- Never claim Cookie and OAuth credentials are interchangeable.
-- Never ask the user to paste a real Cookie or secret into chat.
+Use Cookie auth for search, webpage crawls, comments, and downloads. Use official OAuth for `douyin api` and `douyin mcp`. Credentials are not interchangeable.
 
-Cookie flow:
+Never ask the user to paste a real Cookie, client secret, or token into chat; keep secrets and response bodies out of logs and repositories.
+
+### Cookie
 
 ```bash
 douyin auth cookie-login --cookie "sessionid=...; ttwid=..."
@@ -51,13 +48,11 @@ douyin auth cookie-status
 douyin auth cookie-logout
 ```
 
-Treat `cookie-status --offline` as local format validation only. Ordinary
-`cookie-status` uses the login-state endpoint and may report that the state
-cannot be confirmed when Douyin returns a captcha, risk-control page, or an
-unrecognized upstream response. Never use a successful anonymous web endpoint
-as proof of authentication, and never expose Cookie values or response bodies.
+`--offline` validates local format only. Online status uses Douyin's login-state endpoint and may be unable to confirm under captcha, risk control, or an unrecognized response. An anonymous endpoint succeeding is not authentication proof.
 
-OAuth flow:
+Use saved Cookie state, `--cookie`, or `DOUYIN_COOKIE` for web workflows.
+
+### OAuth
 
 ```bash
 douyin auth login --client-key "$DOUYIN_CLIENT_KEY" --client-secret "$DOUYIN_CLIENT_SECRET" --scope user_info --listen --callback-port 8787
@@ -66,26 +61,43 @@ douyin auth refresh
 douyin auth logout
 ```
 
-Ensure the platform application allows the local callback URL before using
-`--listen`. Use `douyin auth code --code <code>` for manual callbacks.
+Ensure the platform app allows the callback URL. Use `douyin auth code --code <code>` for a manual callback.
 
-## Exercise Core Workflows
+## Web Workflows
 
 ```bash
 douyin -u "关键词" -t search -l 5 --no-download
 douyin -u "https://www.douyin.com/video/..." -t aweme
-douyin comment "https://www.douyin.com/video/..." --with-replies --format chatml-jsonl --output comments.jsonl
-douyin api userinfo
-douyin mcp
+douyin -u "https://www.douyin.com/user/..." -t post -l 20
+douyin comment "https://www.douyin.com/video/..." --limit 100 --with-replies --format chatml-jsonl --output comments.jsonl
 ```
 
-Use saved auth by default. Use `DOUYIN_HOME` to isolate local auth/config state
-during tests. Avoid live Douyin requests unless the user explicitly requests
-endpoint validation or supplies credentials for that purpose.
+Root crawl types: `post`, `favorite`, `music`, `hashtag`, `search`, `following`, `follower`, `collection`, `mix`, and `aweme`.
+
+Avoid live Douyin requests unless the user explicitly requests endpoint validation or provides credentials for that purpose.
+
+## OpenAPI, MCP, and Obscura
+
+```bash
+douyin api userinfo
+douyin api comment-list --item-id "$DOUYIN_ITEM_ID"
+douyin api request GET /oauth/userinfo/ --param open_id="$DOUYIN_OPEN_ID"
+douyin mcp
+douyin obscura manifest
+```
+
+Only send same-origin OpenAPI paths. Treat write operations as confirmation-gated unless the user explicitly supplies `--yes`.
+
+Use `DOUYIN_HOME` to isolate auth/config state during tests:
+
+```bash
+DOUYIN_HOME=/tmp/douyin-command-check cargo run --locked --offline -- auth --help
+DOUYIN_HOME=/tmp/douyin-command-check cargo run --locked --offline -- obscura manifest
+```
 
 ## Verify Changes
 
-After Rust, dependency, CLI, documentation, or packaging changes, run:
+After Rust, dependency, CLI, docs, or packaging changes, run:
 
 ```bash
 cargo fmt --check
@@ -96,5 +108,4 @@ cargo package --locked --offline --allow-dirty
 cargo run --locked --offline -- --help
 ```
 
-Ensure `src/cookie.rs` appears in `cargo package --list`; the root `/cookie.*`
-ignore rule must never match Rust source files.
+Ensure `src/cookie.rs` appears in `cargo package --list`; the root `/cookie.*` ignore rule must never match Rust source files.

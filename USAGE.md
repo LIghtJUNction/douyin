@@ -49,7 +49,7 @@ node --version
 | 场景 | 认证方式 | 命令入口 |
 | --- | --- | --- |
 | 网页搜索、作品下载、评论抓取 | 浏览器 Cookie | `douyin auth cookie-*` |
-| 官方用户信息、评论 API、企业号私信 | 官方 OAuth | `douyin auth login` |
+| 官方用户信息、评论 API、私信消息 | 官方 OAuth | `douyin auth login` |
 | MCP 中的官方 OpenAPI 工具 | 官方 OAuth | `douyin mcp` |
 
 两种认证相互独立，可以同时保存在同一个配置文件中。
@@ -94,7 +94,7 @@ OAuth 需要抖音开放平台应用。准备：
 - `client_key`
 - `client_secret`
 - 应用允许的回调地址
-- 所需 scope，例如 `user_info`、`item.comment` 或 `enterprise.im`
+- 所需 scope，例如 `user_info`、`item.comment` 或 `im.direct_message`；发送图片还需 `tool.image.upload`
 
 推荐本机回调方式。先在应用后台允许 `http://127.0.0.1:8787/callback`：
 
@@ -173,7 +173,7 @@ douyin -u targets.txt \
 - `search`：关键词搜索
 - `following`：关注列表
 - `follower`：粉丝列表
-- `collection`：收藏合集
+- `collection`：当前 Cookie 登录账号的收藏合集（不要传 `-u`）
 - `mix`：作品合集
 - `aweme`：单作品
 
@@ -294,14 +294,18 @@ douyin api comment-reply \
 
 写操作会要求确认；自动化调用可以显式添加 `--yes`。
 
-企业号私信需要应用已开通 `enterprise.im`，并从事件回调取得 `to_user_id`：
+私信命令使用当前的 `/im/send/msg/` 接口，需要应用已开通 `im.direct_message`，并从回调事件取得 `to_user_id`、`msg_id` 和 `conversation_id`：
 
 ```bash
 douyin api im-message-send \
   --to-user-id "$DOUYIN_TO_USER_ID" \
+  --msg-id "$DOUYIN_MSG_ID" \
+  --conversation-id "$DOUYIN_CONVERSATION_ID" \
   --text "你好，已收到" \
   --yes
 ```
+
+默认 `--scene im-reply-msg`；首次进入会话时使用 `--scene im-enter-direct-msg`。`--message-type` 支持 `text`、`image`、`video`，对应传入 `--text`、`--media-id`、`--item-id`。文本最多 1000 字且不能包含链接。
 
 通用同源 OpenAPI 请求：
 
@@ -357,7 +361,7 @@ MCP 工具包括：
 - `im_message_send`
 - `openapi_request`
 
-三个离线洞察工具的输入均为必填字符串数组 `texts`，并可传 `top`（默认 `20`）和 `min_count`（默认 `2`）。其余官方 OpenAPI 工具按各自要求使用 OAuth。
+三个离线洞察工具的输入均为必填字符串数组 `texts`，并可传 `top`（默认 `20`）和 `min_count`（默认 `2`）。其余官方 OpenAPI 工具按各自要求使用 OAuth。`im_message_send` 与命令行一样要求回调事件中的 `to_user_id`、`msg_id` 和 `conversation_id`。
 
 ## 9. 配置、环境变量与退出
 

@@ -2,7 +2,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 pub fn manifest(version: &str, config_file: &Path) -> Value {
     json!({
@@ -27,7 +27,7 @@ pub fn manifest(version: &str, config_file: &Path) -> Value {
                 "commentList": ["douyin", "api", "comment-list", "--item-id", "<item_id>"],
                 "commentReplies": ["douyin", "api", "comment-replies", "--item-id", "<item_id>", "--comment-id", "<comment_id>"],
                 "commentReply": ["douyin", "api", "comment-reply", "--item-id", "<item_id>", "--comment-id", "<comment_id>", "--content", "<content>", "--yes"],
-                "imMessageSend": ["douyin", "api", "im-message-send", "--to-user-id", "<to_user_id>", "--text", "<text>", "--yes"],
+                "imMessageSend": ["douyin", "api", "im-message-send", "--to-user-id", "<to_user_id>", "--msg-id", "<msg_id>", "--conversation-id", "<conversation_id>", "--text", "<text>", "--yes"],
                 "request": ["douyin", "api", "request", "<method>", "<path>"]
             }
         },

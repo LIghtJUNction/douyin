@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use reqwest::Url;
 use reqwest::blocking::{Client, RequestBuilder};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
-use serde_json::{Map, Value, json};
+use reqwest::Url;
+use serde_json::{json, Value};
 
 use crate::err;
 
@@ -160,6 +160,9 @@ impl OpenApiClient {
         if !data.is_object() {
             return Err("OpenAPI 响应不是 JSON object".to_owned());
         }
+        if let Some(error) = api_error(&data) {
+            return Err(error);
+        }
         Ok(data)
     }
 
@@ -209,23 +212,59 @@ pub struct RequestSpec<'a> {
 
 pub fn im_message_body(
     to_user_id: &str,
-    message_type: &str,
+    scene: &str,
+    msg_id: &str,
+    conversation_id: &str,
     content: Value,
-    persona_id: Option<&str>,
-    client_msg_id: Option<&str>,
 ) -> Value {
-    let mut body = Map::from_iter([
-        ("to_user_id".to_owned(), json!(to_user_id)),
-        ("message_type".to_owned(), json!(message_type)),
-        ("content".to_owned(), json!(content.to_string())),
-    ]);
-    if let Some(value) = persona_id {
-        body.insert("persona_id".to_owned(), json!(value));
+    json!({
+        "to_user_id": to_user_id,
+        "scene": scene,
+        "msg_id": msg_id,
+        "conversation_id": conversation_id,
+        "content": content,
+    })
+}
+
+fn api_error(response: &Value) -> Option<String> {
+    let candidates = [
+        (response.get("err_no"), response),
+        (response.get("error_code"), response),
+        (response.get("status_code"), response),
+        (
+            response.pointer("/data/error_code"),
+            response.get("data").unwrap_or(response),
+        ),
+        (
+            response.pointer("/extra/error_code"),
+            response.get("extra").unwrap_or(response),
+        ),
+    ];
+    let (code, details) = candidates
+        .into_iter()
+        .find_map(|(code, details)| nonzero_code(code?).map(|code| (code, details)))?;
+    let message = [
+        "err_msg",
+        "description",
+        "error_msg",
+        "message",
+        "sub_description",
+    ]
+    .into_iter()
+    .find_map(|key| details.get(key).and_then(Value::as_str))
+    .filter(|message| !message.trim().is_empty())
+    .unwrap_or("未提供错误说明");
+    Some(format!("OpenAPI 返回业务错误 {code}: {message}"))
+}
+
+fn nonzero_code(value: &Value) -> Option<String> {
+    match value {
+        Value::Number(number) if number.as_i64().is_some_and(|code| code != 0) => {
+            Some(number.to_string())
+        }
+        Value::String(code) if !code.is_empty() && code != "0" => Some(code.clone()),
+        _ => None,
     }
-    if let Some(value) = client_msg_id {
-        body.insert("client_msg_id".to_owned(), json!(value));
-    }
-    Value::Object(body)
 }
 
 fn add_headers(
@@ -247,20 +286,19 @@ fn add_headers(
 
 #[cfg(test)]
 mod tests {
-    use super::{OpenApiClient, RequestSpec, body_excerpt, im_message_body};
+    use super::{api_error, body_excerpt, im_message_body, OpenApiClient, RequestSpec};
+    use crate::test_support::must;
     use serde_json::json;
 
     #[test]
     fn authorize_url_encodes_values() {
-        let client = OpenApiClient::new().unwrap();
-        let url = client
-            .authorize_url(
-                "client",
-                "https://example.com/callback",
-                &["user_info".to_owned(), "item.comment".to_owned()],
-                Some("state value"),
-            )
-            .unwrap();
+        let client = must(OpenApiClient::new());
+        let url = must(client.authorize_url(
+            "client",
+            "https://example.com/callback",
+            &["user_info".to_owned(), "item.comment".to_owned()],
+            Some("state value"),
+        ));
         assert!(url.starts_with("https://open.douyin.com/platform/oauth/connect/?"));
         assert!(url.contains("scope=user_info%2Citem.comment"));
         assert!(url.contains("redirect_uri=https%3A%2F%2Fexample.com%2Fcallback"));
@@ -269,7 +307,7 @@ mod tests {
 
     #[test]
     fn request_rejects_missing_token_before_network() {
-        let client = OpenApiClient::new().unwrap();
+        let client = must(OpenApiClient::new());
         let error = client
             .request(RequestSpec {
                 method: "GET",
@@ -283,7 +321,7 @@ mod tests {
 
     #[test]
     fn request_rejects_cross_origin_url_before_network() {
-        let client = OpenApiClient::new().unwrap();
+        let client = must(OpenApiClient::new());
         let error = client
             .request(RequestSpec {
                 method: "GET",
@@ -307,15 +345,34 @@ mod tests {
     }
 
     #[test]
-    fn im_body_serializes_content_as_compact_json_string() {
+    fn im_body_uses_the_current_direct_message_shape() {
         let body = im_message_body(
             "user",
-            "text",
-            json!({"text": "你好"}),
-            None,
-            Some("client-msg"),
+            "im_reply_msg",
+            "message-id",
+            "conversation-id",
+            json!({"msg_type": 1, "text": {"text": "你好"}}),
         );
-        assert_eq!(body["content"], "{\"text\":\"你好\"}");
-        assert_eq!(body["client_msg_id"], "client-msg");
+        assert_eq!(body["scene"], "im_reply_msg");
+        assert_eq!(body["msg_id"], "message-id");
+        assert_eq!(body["conversation_id"], "conversation-id");
+        assert_eq!(body["content"]["msg_type"], 1);
+        assert_eq!(body["content"]["text"]["text"], "你好");
+    }
+
+    #[test]
+    fn detects_current_and_legacy_business_errors() {
+        assert_eq!(
+            api_error(&json!({"err_no": 2100005, "err_msg": "参数不合法"})).as_deref(),
+            Some("OpenAPI 返回业务错误 2100005: 参数不合法")
+        );
+        assert_eq!(
+            api_error(
+                &json!({"data": {"error_code": "10008", "description": "access_token 无效"}})
+            )
+            .as_deref(),
+            Some("OpenAPI 返回业务错误 10008: access_token 无效")
+        );
+        assert!(api_error(&json!({"err_no": 0, "data": {"error_code": 0}})).is_none());
     }
 }

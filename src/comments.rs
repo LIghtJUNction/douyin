@@ -21,8 +21,8 @@ pub struct CommentArgs {
     /// 最多抓取一级评论数，0 表示不限制
     #[arg(short, long, default_value_t = 100)]
     limit: usize,
-    /// 每页请求数量
-    #[arg(long, default_value_t = 20)]
+    /// 每页请求数量（抖音网页接口上限为 20）
+    #[arg(long, default_value_t = 20, value_parser = parse_comment_count)]
     count: usize,
     /// 同时抓取评论楼中楼回复
     #[arg(long)]
@@ -31,7 +31,7 @@ pub struct CommentArgs {
     #[arg(long, default_value_t = 20)]
     reply_limit: usize,
     /// 分页请求间隔秒数
-    #[arg(long = "sleep", default_value_t = 0.8)]
+    #[arg(long = "sleep", visible_alias = "sleep-seconds", default_value_t = 0.8, value_parser = parse_non_negative_f64)]
     sleep_seconds: f64,
     /// 输出文件；不传则输出到 stdout
     #[arg(short, long)]
@@ -89,6 +89,7 @@ pub fn run(args: CommentArgs) -> Result<(), String> {
 struct CommentCrawler {
     client: Client,
     user_agent: String,
+    common_params: Vec<(&'static str, String)>,
 }
 
 impl CommentCrawler {
@@ -96,6 +97,7 @@ impl CommentCrawler {
         Ok(Self {
             client: net::web_client(cookie, user_agent, 30)?,
             user_agent: user_agent.to_owned(),
+            common_params: net::web_query_params(cookie),
         })
     }
 
@@ -155,6 +157,10 @@ impl CommentCrawler {
                 ("cursor", cursor.to_string()),
                 ("count", args.count.to_string()),
                 ("item_type", "0".to_owned()),
+                ("insert_ids", String::new()),
+                ("whale_cut_token", String::new()),
+                ("cut_version", "1".to_owned()),
+                ("rcFT", String::new()),
             ]);
             let page = self.fetch_page(path, params)?;
             let values = page
@@ -171,19 +177,22 @@ impl CommentCrawler {
                     break;
                 }
             }
-            cursor = page.get("cursor").and_then(net::value_i64).unwrap_or(0);
+            let next_cursor = page
+                .get("cursor")
+                .and_then(net::value_i64)
+                .unwrap_or(cursor);
             has_more = net::truthy(page.get("has_more"));
+            if has_more && next_cursor == cursor {
+                return Err("评论分页游标没有推进，已停止以避免重复请求".to_owned());
+            }
+            cursor = next_cursor;
             pause(has_more, args.sleep_seconds);
         }
         Ok(items)
     }
 
     fn fetch_page(&self, path: &str, mut params: Vec<(&str, String)>) -> Result<Value, String> {
-        params.extend([
-            ("device_platform", "webapp".to_owned()),
-            ("aid", "6383".to_owned()),
-            ("channel", "channel_pc_web".to_owned()),
-        ]);
+        params.extend(self.common_params.clone());
         let query = net::encode_query(&params);
         let sign_function = if path.contains("reply") {
             "sign_reply"
@@ -221,6 +230,26 @@ impl CommentCrawler {
         }
         Ok(data)
     }
+}
+
+fn parse_comment_count(value: &str) -> Result<usize, String> {
+    let value = value
+        .parse::<usize>()
+        .map_err(|error| format!("无效页大小: {error}"))?;
+    if !(1..=20).contains(&value) {
+        return Err("每页请求数量必须在 1..=20 范围内".to_owned());
+    }
+    Ok(value)
+}
+
+fn parse_non_negative_f64(value: &str) -> Result<f64, String> {
+    let value = value
+        .parse::<f64>()
+        .map_err(|error| format!("无效秒数: {error}"))?;
+    if !value.is_finite() || value < 0.0 {
+        return Err("秒数必须是有限的非负数".to_owned());
+    }
+    Ok(value)
 }
 
 pub fn extract_aweme_id(target: &str) -> Result<String, String> {
@@ -408,21 +437,39 @@ fn pause(has_more: bool, seconds: f64) {
 
 #[cfg(test)]
 mod tests {
-    use super::{CommentArgs, OutputFormat, extract_aweme_id, format_chatml, normalize_comment};
+    use super::{
+        CommentArgs, OutputFormat, extract_aweme_id, format_chatml, normalize_comment,
+        parse_comment_count, parse_non_negative_f64,
+    };
+    use crate::test_support::must;
     use serde_json::json;
+
+    #[test]
+    fn validates_page_size_and_sleep_values() {
+        assert_eq!(must(parse_comment_count("20")), 20);
+        assert!(parse_comment_count("0").is_err());
+        assert!(parse_comment_count("21").is_err());
+        assert_eq!(must(parse_non_negative_f64("0.5")), 0.5);
+        assert!(parse_non_negative_f64("NaN").is_err());
+        assert!(parse_non_negative_f64("-1").is_err());
+    }
 
     #[test]
     fn extracts_raw_and_url_aweme_ids() {
         assert_eq!(
-            extract_aweme_id("7380000000000000000").unwrap(),
+            must(extract_aweme_id("7380000000000000000")),
             "7380000000000000000"
         );
         assert_eq!(
-            extract_aweme_id("https://www.douyin.com/video/7380000000000000000?x=1").unwrap(),
+            must(extract_aweme_id(
+                "https://www.douyin.com/video/7380000000000000000?x=1"
+            )),
             "7380000000000000000"
         );
         assert_eq!(
-            extract_aweme_id("https://www.douyin.com/note/7380000000000000000").unwrap(),
+            must(extract_aweme_id(
+                "https://www.douyin.com/note/7380000000000000000"
+            )),
             "7380000000000000000"
         );
     }

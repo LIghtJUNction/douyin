@@ -2,10 +2,10 @@ use std::collections::HashMap;
 use std::io::{self, Write};
 
 use clap::{Args, Subcommand, ValueEnum};
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 
 use crate::err;
-use crate::openapi::{OpenApiClient, RequestSpec, im_message_body};
+use crate::openapi::{im_message_body, OpenApiClient, RequestSpec};
 use crate::settings;
 
 #[derive(Debug, Args)]
@@ -67,8 +67,11 @@ enum ApiCommand {
         item_id: String,
         #[arg(long, default_value_t = 0)]
         cursor: u64,
-        #[arg(long, default_value_t = 20)]
+        #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u32).range(1..=20))]
         count: u32,
+        /// 0=综合排序，1=最多点赞，2=最新发布
+        #[arg(long, value_parser = clap::value_parser!(u8).range(0..=2))]
+        sort_type: Option<u8>,
     },
     /// 调用官方接口获取评论回复列表
     CommentReplies {
@@ -80,8 +83,11 @@ enum ApiCommand {
         comment_id: String,
         #[arg(long, default_value_t = 0)]
         cursor: u64,
-        #[arg(long, default_value_t = 20)]
+        #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u32).range(1..=20))]
         count: u32,
+        /// 0=综合排序，1=最多点赞，2=最新发布
+        #[arg(long, value_parser = clap::value_parser!(u8).range(0..=2))]
+        sort_type: Option<u8>,
     },
     /// 调用官方接口回复视频评论
     CommentReply {
@@ -96,12 +102,21 @@ enum ApiCommand {
         #[arg(long)]
         yes: bool,
     },
-    /// 调用企业号 OpenAPI 发送私信消息
+    /// 通过官方私信接口回复或首次进入会话
     ImMessageSend {
         #[command(flatten)]
         auth: AuthOptions,
         #[arg(long)]
         to_user_id: String,
+        /// 私信场景；reply/enter 也可作为别名
+        #[arg(long, value_enum, default_value_t = ImScene::Reply)]
+        scene: ImScene,
+        /// 回调事件中的消息 ID
+        #[arg(long)]
+        msg_id: String,
+        /// 回调事件中的会话 ID
+        #[arg(long)]
+        conversation_id: String,
         #[arg(long, value_enum, default_value_t = MessageType::Text)]
         message_type: MessageType,
         #[arg(long)]
@@ -110,12 +125,6 @@ enum ApiCommand {
         media_id: Option<String>,
         #[arg(long)]
         item_id: Option<String>,
-        #[arg(long)]
-        card_id: Option<String>,
-        #[arg(long)]
-        persona_id: Option<String>,
-        #[arg(long)]
-        client_msg_id: Option<String>,
         #[arg(long)]
         yes: bool,
     },
@@ -151,16 +160,21 @@ enum MessageType {
     Text,
     Image,
     Video,
-    Card,
 }
 
-impl MessageType {
+#[derive(Clone, Debug, ValueEnum)]
+enum ImScene {
+    #[value(name = "im-reply-msg", alias = "reply")]
+    Reply,
+    #[value(name = "im-enter-direct-msg", alias = "enter")]
+    Enter,
+}
+
+impl ImScene {
     fn as_str(&self) -> &'static str {
         match self {
-            Self::Text => "text",
-            Self::Image => "image",
-            Self::Video => "video",
-            Self::Card => "card",
+            Self::Reply => "im_reply_msg",
+            Self::Enter => "im_enter_direct_msg",
         }
     }
 }
@@ -213,18 +227,23 @@ pub fn run(args: ApiArgs) -> Result<(), String> {
             item_id,
             cursor,
             count,
+            sort_type,
         } => {
             let (token, open_id) = resolve_auth(auth)?;
+            let mut params = HashMap::from([
+                ("open_id".to_owned(), open_id),
+                ("item_id".to_owned(), item_id),
+                ("cursor".to_owned(), cursor.to_string()),
+                ("count".to_owned(), count.to_string()),
+            ]);
+            if let Some(sort_type) = sort_type {
+                params.insert("sort_type".to_owned(), sort_type.to_string());
+            }
             client.request(RequestSpec {
                 method: "GET",
                 path: "/item/comment/list/",
                 token: Some(&token),
-                params: Some(HashMap::from([
-                    ("open_id".to_owned(), open_id),
-                    ("item_id".to_owned(), item_id),
-                    ("cursor".to_owned(), cursor.to_string()),
-                    ("count".to_owned(), count.to_string()),
-                ])),
+                params: Some(params),
                 auth_required: true,
                 ..RequestSpec::default()
             })?
@@ -235,19 +254,24 @@ pub fn run(args: ApiArgs) -> Result<(), String> {
             comment_id,
             cursor,
             count,
+            sort_type,
         } => {
             let (token, open_id) = resolve_auth(auth)?;
+            let mut params = HashMap::from([
+                ("open_id".to_owned(), open_id),
+                ("item_id".to_owned(), item_id),
+                ("comment_id".to_owned(), comment_id),
+                ("cursor".to_owned(), cursor.to_string()),
+                ("count".to_owned(), count.to_string()),
+            ]);
+            if let Some(sort_type) = sort_type {
+                params.insert("sort_type".to_owned(), sort_type.to_string());
+            }
             client.request(RequestSpec {
                 method: "GET",
                 path: "/item/comment/reply/list/",
                 token: Some(&token),
-                params: Some(HashMap::from([
-                    ("open_id".to_owned(), open_id),
-                    ("item_id".to_owned(), item_id),
-                    ("comment_id".to_owned(), comment_id),
-                    ("cursor".to_owned(), cursor.to_string()),
-                    ("count".to_owned(), count.to_string()),
-                ])),
+                params: Some(params),
                 auth_required: true,
                 ..RequestSpec::default()
             })?
@@ -260,6 +284,7 @@ pub fn run(args: ApiArgs) -> Result<(), String> {
             yes,
         } => {
             let (token, open_id) = resolve_auth(auth)?;
+            validate_text(&content, "评论内容", 100, false)?;
             confirm_write("将通过官方 OpenAPI 发送评论回复，是否继续？", yes)?;
             let mut body = Map::from_iter([
                 ("item_id".to_owned(), json!(item_id)),
@@ -281,29 +306,29 @@ pub fn run(args: ApiArgs) -> Result<(), String> {
         ApiCommand::ImMessageSend {
             auth,
             to_user_id,
+            scene,
+            msg_id,
+            conversation_id,
             message_type,
             text,
             media_id,
             item_id,
-            card_id,
-            persona_id,
-            client_msg_id,
             yes,
         } => {
             let (token, open_id) = resolve_auth(auth)?;
-            let content = message_content(&message_type, text, media_id, item_id, card_id)?;
-            confirm_write("将通过企业号 OpenAPI 发送私信消息，是否继续？", yes)?;
+            let content = message_content(&message_type, text, media_id, item_id)?;
+            confirm_write("将通过官方 OpenAPI 发送私信消息，是否继续？", yes)?;
             client.request(RequestSpec {
                 method: "POST",
-                path: "/enterprise/im/message/send/",
+                path: "/im/send/msg/",
                 token: Some(&token),
                 params: Some(HashMap::from([("open_id".to_owned(), open_id)])),
                 json_body: Some(im_message_body(
                     &to_user_id,
-                    message_type.as_str(),
+                    scene.as_str(),
+                    &msg_id,
+                    &conversation_id,
                     content,
-                    persona_id.as_deref(),
-                    client_msg_id.as_deref(),
                 )),
                 auth_required: true,
                 ..RequestSpec::default()
@@ -363,16 +388,56 @@ fn message_content(
     text: Option<String>,
     media_id: Option<String>,
     item_id: Option<String>,
-    card_id: Option<String>,
 ) -> Result<Value, String> {
-    let (key, value, error) = match message_type {
-        MessageType::Text => ("text", text, "message-type=text 需要 --text"),
-        MessageType::Image => ("media_id", media_id, "message-type=image 需要 --media-id"),
-        MessageType::Video => ("item_id", item_id, "message-type=video 需要 --item-id"),
-        MessageType::Card => ("card_id", card_id, "message-type=card 需要 --card-id"),
+    let (code, kind, key, value, error) = match message_type {
+        MessageType::Text => (1, "text", "text", text, "message-type=text 需要 --text"),
+        MessageType::Image => (
+            2,
+            "image",
+            "media_id",
+            media_id,
+            "message-type=image 需要 --media-id",
+        ),
+        MessageType::Video => (
+            3,
+            "video",
+            "item_id",
+            item_id,
+            "message-type=video 需要 --item-id",
+        ),
     };
-    let value = value.filter(|value| !value.is_empty()).ok_or(error)?;
-    Ok(json!({key: value}))
+    let value = value
+        .filter(|value| !value.trim().is_empty())
+        .ok_or(error)?;
+    if matches!(message_type, MessageType::Text) {
+        validate_text(&value, "私信文本", 1_000, true)?;
+    }
+    let payload = Value::Object(Map::from_iter([(key.to_owned(), json!(value))]));
+    Ok(Value::Object(Map::from_iter([
+        ("msg_type".to_owned(), json!(code)),
+        (kind.to_owned(), payload),
+    ])))
+}
+
+fn validate_text(
+    value: &str,
+    name: &str,
+    max_chars: usize,
+    forbid_links: bool,
+) -> Result<(), String> {
+    let length = value.chars().count();
+    if length == 0 {
+        return Err(format!("{name}不能为空"));
+    }
+    if length > max_chars {
+        return Err(format!(
+            "{name}不能超过 {max_chars} 个字符（当前 {length}）"
+        ));
+    }
+    if forbid_links && (value.contains("http://") || value.contains("https://")) {
+        return Err(format!("{name}不能包含链接"));
+    }
+    Ok(())
 }
 
 fn parse_key_values(values: Vec<String>) -> Result<Option<HashMap<String, String>>, String> {
@@ -428,37 +493,40 @@ fn print_json(value: &Value) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MessageType, message_content, parse_json, parse_key_values};
+    use super::{message_content, parse_json, parse_key_values, validate_text, MessageType};
+    use crate::test_support::{must, present};
     use serde_json::json;
 
     #[test]
-    fn text_message_requires_text() {
+    fn text_message_requires_text_and_uses_current_content_shape() {
         assert_eq!(
-            message_content(&MessageType::Text, None, None, None, None).unwrap_err(),
+            message_content(&MessageType::Text, None, None, None).unwrap_err(),
             "message-type=text 需要 --text"
         );
         assert_eq!(
-            message_content(
+            must(message_content(
                 &MessageType::Text,
                 Some("你好".to_owned()),
                 None,
-                None,
                 None
-            )
-            .unwrap(),
-            json!({"text": "你好"})
+            )),
+            json!({"msg_type": 1, "text": {"text": "你好"}})
         );
+        assert!(message_content(
+            &MessageType::Text,
+            Some("https://example.com".to_owned()),
+            None,
+            None
+        )
+        .is_err());
+        assert!(validate_text(&"字".repeat(101), "评论内容", 100, false).is_err());
     }
 
     #[test]
     fn generic_request_parsers_reject_invalid_values() {
         assert!(parse_key_values(vec!["invalid".to_owned()]).is_err());
         assert!(parse_json(Some("1".to_owned())).is_err());
-        assert_eq!(
-            parse_key_values(vec!["open_id=value".to_owned()])
-                .unwrap()
-                .unwrap()["open_id"],
-            "value"
-        );
+        let values = present(must(parse_key_values(vec!["open_id=value".to_owned()])));
+        assert_eq!(values["open_id"], "value");
     }
 }

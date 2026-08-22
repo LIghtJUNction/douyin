@@ -3,10 +3,13 @@ use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::Duration;
 
 use clap::{Args, ValueEnum};
 use percent_encoding::percent_decode_str;
 use reqwest::blocking::Client;
+use reqwest::header::REFERER;
 use serde_json::{Map, Value, json};
 
 use crate::err;
@@ -39,8 +42,8 @@ pub struct CrawlArgs {
     /// 搜索排序：0=综合，1=最多点赞，2=最新
     #[arg(long, value_parser = ["0", "1", "2"])]
     sort_type: Option<String>,
-    /// 发布时间：0=不限，1=一天内，7=一周内，180=半年内
-    #[arg(long, value_parser = ["0", "1", "7", "180"])]
+    /// 发布时间：0=不限，1=一天内，7=一周内，182=半年内；180 为兼容别名
+    #[arg(long, value_parser = ["0", "1", "7", "180", "182"])]
     publish_time: Option<String>,
     /// 视频时长：空=不限，0-1、1-5、5-10000
     #[arg(long, value_parser = ["", "0-1", "1-5", "5-10000"])]
@@ -111,6 +114,7 @@ impl CrawlArgs {
 }
 
 pub fn run(args: CrawlArgs) -> Result<(), String> {
+    let targets = resolve_targets(&args.urls, args.crawl_type)?;
     let settings_data = settings::load().map_err(err)?;
     let (cookie_value, user_agent) = net::credentials(&settings_data, args.cookie.as_deref())?;
     let filename_fields = settings_data
@@ -144,7 +148,6 @@ pub fn run(args: CrawlArgs) -> Result<(), String> {
             .unwrap_or(false);
 
     let web = WebClient::new(&cookie_value, user_agent)?;
-    let targets = resolve_targets(&args.urls, args.crawl_type)?;
     let mut successes = 0_usize;
     let mut failures = 0_usize;
     for target in targets {
@@ -185,6 +188,11 @@ pub fn run(args: CrawlArgs) -> Result<(), String> {
 }
 
 fn resolve_targets(inputs: &[String], crawl_type: CrawlType) -> Result<Vec<String>, String> {
+    if crawl_type == CrawlType::Collection && !inputs.is_empty() {
+        return Err(
+            "collection 仅支持当前 Cookie 登录账号的收藏夹，请不要传入 -u/--urls".to_owned(),
+        );
+    }
     if inputs.is_empty() {
         if crawl_type.is_account_only() {
             return Ok(vec![String::new()]);
@@ -283,40 +291,36 @@ fn crawl_pages(
     limit: usize,
     args: &CrawlArgs,
 ) -> Result<Vec<Value>, String> {
+    const MAX_ATTEMPTS: u8 = 3;
+
     let mut cursor = 0_i64;
-    let mut log_id = String::new();
+    let mut search_id = String::new();
     let mut has_more = true;
     let mut results = Vec::new();
-    let mut retries = 0_u8;
     while has_more && !net::limit_reached(results.len(), limit) {
-        let request = list_request(target, cursor, &log_id, args)?;
-        let response = match web.fetch_json(request.path, request.params, request.form) {
-            Ok(value) => {
-                retries = 0;
-                value
+        let request = list_request(target, cursor, &search_id, args)?;
+        let mut response = None;
+        for attempt in 1..=MAX_ATTEMPTS {
+            match web.fetch_json(request.path, request.params.clone(), request.form.clone()) {
+                Ok(value) => {
+                    response = Some(value);
+                    break;
+                }
+                Err(error) if attempt < MAX_ATTEMPTS => {
+                    eprintln!("采集请求失败，{attempt}/{MAX_ATTEMPTS}：{error}");
+                    thread::sleep(Duration::from_secs(u64::from(attempt)));
+                }
+                Err(error) => return Err(error),
             }
-            Err(error) if retries < 9 => {
-                retries += 1;
-                eprintln!("采集请求失败，重试 {retries}/10：{error}");
-                continue;
-            }
-            Err(error) => return Err(error),
-        };
-        cursor = ["max_cursor", "cursor", "min_time"]
-            .into_iter()
-            .find_map(|key| {
-                response
-                    .get(key)
-                    .and_then(net::value_i64)
-                    .filter(|value| *value != 0)
-            })
-            .unwrap_or(cursor);
-        if log_id.is_empty() {
+        }
+        let response = response.ok_or_else(|| "采集请求未返回结果".to_owned())?;
+        if target.kind == CrawlType::Search {
             response
-                .pointer("/log_pb/impr_id")
+                .pointer("/extra/logid")
+                .or_else(|| response.pointer("/log_pb/impr_id"))
                 .and_then(Value::as_str)
                 .unwrap_or("")
-                .clone_into(&mut log_id);
+                .clone_into(&mut search_id);
         }
         let items = ["aweme_list", "user_list", "data", "followings", "followers"]
             .into_iter()
@@ -330,12 +334,32 @@ fn crawl_pages(
             .unwrap_or_default();
         has_more = net::truthy(response.get("has_more"));
         if items.is_empty() {
-            if has_more && retries < 9 {
-                retries += 1;
-                continue;
+            if has_more {
+                return Err(
+                    "接口返回 has_more 但没有数据，可能已触发风控；已停止以避免无限重试".to_owned(),
+                );
             }
             break;
         }
+        let next_cursor = ["max_cursor", "cursor", "min_time"]
+            .into_iter()
+            .find_map(|key| {
+                response
+                    .get(key)
+                    .and_then(net::value_i64)
+                    .filter(|value| *value != 0)
+            })
+            .unwrap_or_else(|| {
+                if target.kind == CrawlType::Search {
+                    cursor.saturating_add(i64::try_from(items.len()).unwrap_or(i64::MAX))
+                } else {
+                    cursor
+                }
+            });
+        if has_more && next_cursor == cursor {
+            return Err("分页游标没有推进，已停止以避免重复请求".to_owned());
+        }
+        cursor = next_cursor;
         for raw in items {
             let item = raw
                 .get(if target.kind.is_user_list() {
@@ -383,9 +407,10 @@ fn list_request(
                 ("max_cursor", &cursor.to_string()),
                 ("locate_query", "false"),
                 ("show_live_replay_strategy", "1"),
-                ("need_time_list", "0"),
+                ("need_time_list", "1"),
                 ("time_list_query", "0"),
                 ("whale_cut_token", ""),
+                ("cut_version", "1"),
                 ("count", &count),
                 ("sec_user_id", &target.id),
             ]),
@@ -407,10 +432,11 @@ fn list_request(
         CrawlType::Collection => ListRequest {
             path: "/aweme/v1/web/aweme/listcollection/",
             params: pairs([
-                ("sec_user_id", &target.id),
                 ("publish_video_strategy_type", "2"),
+                ("version_code", "170400"),
+                ("version_name", "17.4.0"),
             ]),
-            form: Some(pairs([("cursor", &cursor.to_string()), ("count", &count)])),
+            form: Some(pairs([("count", &count), ("cursor", &cursor.to_string())])),
         },
         CrawlType::Music => ListRequest {
             path: "/aweme/v1/web/music/aweme/",
@@ -441,44 +467,63 @@ fn list_request(
             form: None,
         },
         CrawlType::Search => {
-            let filters = json!({
-                "sort_type": args.sort_type.as_deref().unwrap_or("0"),
-                "publish_time": args.publish_time.as_deref().unwrap_or("0"),
-                "content_type": "1",
-                "filter_duration": args.filter_duration.as_deref().unwrap_or("0"),
-                "search_range": "0"
-            });
+            let sort_type = args.sort_type.as_deref().unwrap_or("0");
+            let publish_time = match args.publish_time.as_deref().unwrap_or("0") {
+                "180" => "182",
+                value => value,
+            };
+            let filter_duration = args.filter_duration.as_deref().unwrap_or("0");
+            let is_filtered = sort_type != "0" || publish_time != "0" || filter_duration != "0";
+            let mut params = vec![
+                ("search_channel".to_owned(), "aweme_general".to_owned()),
+                ("enable_history".to_owned(), "1".to_owned()),
+                ("keyword".to_owned(), target.id.clone()),
+                ("search_source".to_owned(), "tab_search".to_owned()),
+                ("query_correct_type".to_owned(), "1".to_owned()),
+                (
+                    "is_filter_search".to_owned(),
+                    u8::from(is_filtered).to_string(),
+                ),
+                ("from_group_id".to_owned(), String::new()),
+                ("disable_rs".to_owned(), "0".to_owned()),
+                ("offset".to_owned(), cursor.to_string()),
+                ("count".to_owned(), "10".to_owned()),
+                ("need_filter_settings".to_owned(), "1".to_owned()),
+                ("list_type".to_owned(), "multi".to_owned()),
+                ("search_id".to_owned(), log_id.to_owned()),
+            ];
+            if is_filtered {
+                params.push((
+                    "filter_selected".to_owned(),
+                    json!({
+                        "sort_type": sort_type,
+                        "publish_time": publish_time,
+                        "content_type": "1",
+                        "filter_duration": filter_duration,
+                        "search_range": "0"
+                    })
+                    .to_string(),
+                ));
+            }
             ListRequest {
                 path: "/aweme/v1/web/general/search/single/",
-                params: vec![
-                    ("search_channel".to_owned(), "aweme_general".to_owned()),
-                    ("enable_history".to_owned(), "1".to_owned()),
-                    ("filter_selected".to_owned(), filters.to_string()),
-                    ("keyword".to_owned(), target.id.clone()),
-                    ("search_source".to_owned(), "tab_search".to_owned()),
-                    ("query_correct_type".to_owned(), "1".to_owned()),
-                    ("is_filter_search".to_owned(), "1".to_owned()),
-                    ("from_group_id".to_owned(), String::new()),
-                    ("disable_rs".to_owned(), "0".to_owned()),
-                    ("offset".to_owned(), cursor.to_string()),
-                    ("count".to_owned(), count),
-                    ("need_filter_settings".to_owned(), "0".to_owned()),
-                    ("list_type".to_owned(), "multi".to_owned()),
-                    ("search_id".to_owned(), log_id.to_owned()),
-                ],
+                params,
                 form: None,
             }
         }
         CrawlType::Following => ListRequest {
             path: "/aweme/v1/web/user/following/list/",
             params: pairs([
+                ("user_id", &target.id),
                 ("sec_user_id", &target.id),
                 ("offset", "0"),
                 ("min_time", "0"),
                 ("max_time", &cursor.to_string()),
                 ("count", "20"),
+                ("source_type", "1"),
                 ("gps_access", "0"),
-                ("is_top", "1"),
+                ("address_book_access", "0"),
+                ("min_change", "0"),
             ]),
             form: None,
         },
@@ -590,6 +635,7 @@ impl Target {
 struct WebClient {
     client: Client,
     user_agent: String,
+    common_params: Vec<(String, String)>,
 }
 
 impl WebClient {
@@ -597,6 +643,10 @@ impl WebClient {
         Ok(Self {
             client: net::web_client(cookie, user_agent, 60)?,
             user_agent: user_agent.to_owned(),
+            common_params: net::web_query_params(cookie)
+                .into_iter()
+                .map(|(key, value)| (key.to_owned(), value))
+                .collect(),
         })
     }
 
@@ -606,17 +656,12 @@ impl WebClient {
         mut params: Vec<(String, String)>,
         form: Option<Vec<(String, String)>>,
     ) -> Result<Value, String> {
-        params.extend([
-            ("device_platform".to_owned(), "webapp".to_owned()),
-            ("aid".to_owned(), "6383".to_owned()),
-            ("channel".to_owned(), "channel_pc_web".to_owned()),
-        ]);
-        if matches!(
-            path,
-            "/aweme/v1/web/aweme/detail/"
-                | "/aweme/v1/web/music/aweme/"
-                | "/aweme/v1/web/user/follower/list/"
-        ) {
+        for (key, value) in &self.common_params {
+            if !params.iter().any(|(existing, _)| existing == key) {
+                params.push((key.clone(), value.clone()));
+            }
+        }
+        if path != "/aweme/v1/web/general/search/single/" {
             let query = net::encode_query(&params);
             params.push((
                 "a_bogus".to_owned(),
@@ -630,6 +675,14 @@ impl WebClient {
                 .form(&form)
         } else {
             self.client.get(format!("{BASE_URL}{path}")).query(&params)
+        };
+        let request = if path == "/aweme/v1/web/aweme/listcollection/" {
+            request.header(
+                REFERER,
+                "https://www.douyin.com/user/self?showTab=favorite_collection",
+            )
+        } else {
+            request
         };
         let response = request.send().map_err(err)?;
         let status = response.status();
@@ -1203,23 +1256,110 @@ mod tests {
     use std::io::Cursor;
 
     use super::{
-        CrawlType, Target, WebClient, extract_escaped_value, item_filename, parse_aweme,
-        parse_user, persist_download, sanitize_filename,
+        CrawlArgs, CrawlType, Target, WebClient, default_download_root, extract_escaped_value,
+        item_filename, list_request, parse_aweme, parse_user, persist_download, resolve_targets,
+        sanitize_filename,
     };
+    use crate::test_support::{must, present};
     use serde_json::json;
+
+    fn search_args() -> CrawlArgs {
+        CrawlArgs {
+            urls: Vec::new(),
+            limit: 0,
+            no_download: true,
+            crawl_type: CrawlType::Search,
+            output_path: default_download_root(),
+            cookie: None,
+            sort_type: None,
+            publish_time: None,
+            filter_duration: None,
+            download_title: false,
+            download_cover: false,
+        }
+    }
+
+    #[test]
+    fn current_search_params_keep_session_and_normalize_half_year_filter() {
+        let target = Target {
+            id: "关键词".to_owned(),
+            url: "https://www.douyin.com/search/关键词".to_owned(),
+            kind: CrawlType::Search,
+        };
+        let mut args = search_args();
+        let unfiltered = must(list_request(&target, 10, "search-log", &args));
+        assert!(
+            !unfiltered
+                .params
+                .iter()
+                .any(|(key, _)| key == "filter_selected")
+        );
+        assert!(
+            unfiltered
+                .params
+                .contains(&("count".to_owned(), "10".to_owned()))
+        );
+        assert!(
+            unfiltered
+                .params
+                .contains(&("search_id".to_owned(), "search-log".to_owned()))
+        );
+
+        args.publish_time = Some("180".to_owned());
+        let filtered = must(list_request(&target, 0, "", &args));
+        let (_, filters) = present(
+            filtered
+                .params
+                .iter()
+                .find(|(key, _)| key == "filter_selected"),
+        );
+        let filters = must(serde_json::from_str::<serde_json::Value>(filters));
+        assert_eq!(filters["publish_time"], "182");
+    }
+
+    #[test]
+    fn collection_rejects_other_account_targets() {
+        assert_eq!(must(resolve_targets(&[], CrawlType::Collection)), vec![""]);
+        assert!(resolve_targets(&["someone".to_owned()], CrawlType::Collection).is_err());
+    }
+
+    #[test]
+    fn collection_cursor_and_count_are_form_fields() {
+        let target = Target {
+            id: "self".to_owned(),
+            url: "https://www.douyin.com/user/self".to_owned(),
+            kind: CrawlType::Collection,
+        };
+        let request = must(list_request(&target, 42, "", &search_args()));
+        let form = present(request.form);
+        assert!(form.contains(&("cursor".to_owned(), "42".to_owned())));
+        assert!(form.contains(&("count".to_owned(), "18".to_owned())));
+        assert!(
+            request
+                .params
+                .contains(&("version_code".to_owned(), "170400".to_owned()))
+        );
+        assert!(!request.params.iter().any(|(key, _)| key == "sec_user_id"));
+    }
 
     #[test]
     fn parses_video_and_image_awemes() {
-        let video = parse_aweme(&json!({
-            "aweme_type":4,"aweme_id":"1","create_time":10,"desc":"标题",
-            "statistics":{"digg_count":2},"video":{"play_addr":{"url_list":["https://video"]},"duration":12000},
-            "author":{"nickname":"作者","sec_uid":"sec","avatar_thumb":{"url_list":["https://avatar"]}}
-        }), CrawlType::Post).unwrap();
+        let video = present(parse_aweme(
+            &json!({
+                "aweme_type":4,"aweme_id":"1","create_time":10,"desc":"标题",
+                "statistics":{"digg_count":2},"video":{"play_addr":{"url_list":["https://video"]},"duration":12000},
+                "author":{"nickname":"作者","sec_uid":"sec","avatar_thumb":{"url_list":["https://avatar"]}}
+            }),
+            CrawlType::Post,
+        ));
         assert_eq!(video["download_addr"], "https://video");
         assert_eq!(video["author_nickname"], "作者");
-        let image = parse_aweme(&json!({
-            "aweme_type":68,"aweme_id":"2","desc":"图集","images":[{"url_list":["https://image"]}]
-        }), CrawlType::Aweme).unwrap();
+        let image = present(parse_aweme(
+            &json!({
+                "aweme_type":68,"aweme_id":"2","desc":"图集","images":[{"url_list":["https://image"]}]
+            }),
+            CrawlType::Aweme,
+        ));
         assert_eq!(image["download_addr"][0], "https://image");
     }
 
@@ -1250,13 +1390,15 @@ mod tests {
 
     #[test]
     fn target_auto_detects_and_decodes_search_urls() {
-        let web = WebClient::new("sessionid=test", crate::net::DEFAULT_USER_AGENT).unwrap();
-        let target = Target::parse(
+        let web = must(WebClient::new(
+            "sessionid=test",
+            crate::net::DEFAULT_USER_AGENT,
+        ));
+        let target = must(Target::parse(
             &web,
             "https://www.douyin.com/search/%E4%BA%8C%E6%89%8B%E8%BD%A6",
             CrawlType::Post,
-        )
-        .unwrap();
+        ));
         assert_eq!(target.kind, CrawlType::Search);
         assert_eq!(target.id, "二手车");
     }
@@ -1277,12 +1419,12 @@ mod tests {
     fn native_downloader_atomically_writes_stream() {
         let directory =
             std::env::temp_dir().join(format!("douyin-rust-download-test-{}", std::process::id()));
-        fs::create_dir_all(&directory).unwrap();
+        must(fs::create_dir_all(&directory));
         let path = directory.join("sample.bin");
         let mut body = Cursor::new(b"media");
-        persist_download(&mut body, &path).unwrap();
-        assert_eq!(fs::read(&path).unwrap(), b"media");
-        fs::remove_file(path).unwrap();
-        fs::remove_dir(directory).unwrap();
+        must(persist_download(&mut body, &path));
+        assert_eq!(must(fs::read(&path)), b"media");
+        must(fs::remove_file(path));
+        must(fs::remove_dir(directory));
     }
 }

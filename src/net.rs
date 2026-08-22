@@ -3,13 +3,13 @@ use std::time::Duration;
 
 use reqwest::blocking::Client;
 use reqwest::header::{
-    ACCEPT, ACCEPT_LANGUAGE, COOKIE, HeaderMap, HeaderValue, REFERER, USER_AGENT,
+    HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, COOKIE, REFERER, USER_AGENT,
 };
 use serde_json::Value;
 
 use crate::{cookie, err};
 
-pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36";
+pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36";
 
 const SIGN_SCRIPT: &str = include_str!("../assets/douyin.js");
 
@@ -57,6 +57,48 @@ pub fn web_client(cookie: &str, user_agent: &str, timeout_seconds: u64) -> Resul
         .timeout(Duration::from_secs(timeout_seconds))
         .build()
         .map_err(err)
+}
+
+/// Browser parameters shared by the current Douyin web endpoints.
+///
+/// `msToken` participates in the signature when it is present in the saved Cookie,
+/// so callers must append these values before generating `a_bogus`.
+pub fn web_query_params(cookie_header: &str) -> Vec<(&'static str, String)> {
+    let mut params = vec![
+        ("device_platform", "webapp".to_owned()),
+        ("aid", "6383".to_owned()),
+        ("channel", "channel_pc_web".to_owned()),
+        ("update_version_code", "170400".to_owned()),
+        ("pc_client_type", "1".to_owned()),
+        ("pc_libra_divert", "Windows".to_owned()),
+        ("version_code", "290100".to_owned()),
+        ("version_name", "29.1.0".to_owned()),
+        ("cookie_enabled", "true".to_owned()),
+        ("screen_width", "1536".to_owned()),
+        ("screen_height", "864".to_owned()),
+        ("browser_language", "zh-CN".to_owned()),
+        ("browser_platform", "Win32".to_owned()),
+        ("browser_name", "Chrome".to_owned()),
+        ("browser_version", "139.0.0.0".to_owned()),
+        ("browser_online", "true".to_owned()),
+        ("engine_name", "Blink".to_owned()),
+        ("engine_version", "139.0.0.0".to_owned()),
+        ("os_name", "Windows".to_owned()),
+        ("os_version", "10".to_owned()),
+        ("cpu_core_num", "16".to_owned()),
+        ("device_memory", "8".to_owned()),
+        ("platform", "PC".to_owned()),
+        ("downlink", "10".to_owned()),
+        ("effective_type", "4g".to_owned()),
+        ("round_trip_time", "200".to_owned()),
+        ("support_h265", "1".to_owned()),
+        ("support_dash", "1".to_owned()),
+        ("uifid", String::new()),
+    ];
+    if let Some(token) = cookie::parse(cookie_header).remove("msToken") {
+        params.push(("msToken", token));
+    }
+    params
 }
 
 /// Douyin sometimes returns numeric fields (cursor, has_more, status_code) as quoted
@@ -130,16 +172,24 @@ pub fn sign(function: &str, query: &str, user_agent: &str) -> Result<String, Str
 
 #[cfg(test)]
 mod tests {
-    use super::{DEFAULT_USER_AGENT, sign};
+    use super::{sign, web_query_params, DEFAULT_USER_AGENT};
+    use crate::test_support::must;
+
+    #[test]
+    fn web_params_include_cookie_ms_token_before_signing() {
+        let params = web_query_params("ttwid=abc; msToken=token-123");
+        assert!(params.contains(&("device_platform", "webapp".to_owned())));
+        assert!(params.contains(&("browser_version", "139.0.0.0".to_owned())));
+        assert!(params.contains(&("msToken", "token-123".to_owned())));
+    }
 
     #[test]
     fn bundled_signer_returns_a_bogus_value() {
-        let value = sign(
+        let value = must(sign(
             "sign_datail",
             "aweme_id=7380000000000000000&device_platform=webapp&aid=6383",
             DEFAULT_USER_AGENT,
-        )
-        .unwrap();
+        ));
         assert!(value.ends_with('='));
         assert!(value.len() > 20);
     }

@@ -45,7 +45,7 @@ cargo install --path . --locked
 | 用途 | 登录方式 | 是否需要开放平台应用 |
 | --- | --- | --- |
 | 搜索、主页作品、单作品下载、网页评论 | 浏览器 Cookie | 否 |
-| 官方用户信息、官方评论接口、企业号私信、MCP | 官方 OAuth | 是 |
+| 官方用户信息、官方评论接口、私信消息、MCP | 官方 OAuth | 是 |
 
 Cookie 不能代替 OpenAPI token，OAuth token 也不能代替网页 Cookie。
 
@@ -77,7 +77,7 @@ douyin auth cookie-logout
 
 ### 使用官方 OAuth
 
-先在抖音开放平台创建应用，准备 `client_key`、`client_secret`、允许的回调地址和所需 scope。
+先在抖音开放平台创建应用，准备 `client_key`、`client_secret`、允许的回调地址和所需 scope。评论接口使用 `item.comment`；私信接口使用 `im.direct_message`，发送图片还需 `tool.image.upload`。
 
 推荐使用本机回调监听。开放平台应用中需要允许 `http://127.0.0.1:8787/callback`：
 
@@ -146,7 +146,7 @@ douyin -u "https://www.douyin.com/user/用户ID" -t post -l 20
 douyin -u targets.txt -p ./downloads --download-title --download-cover
 ```
 
-`-t` 支持 `post`、`favorite`、`music`、`hashtag`、`search`、`following`、`follower`、`collection`、`mix` 和 `aweme`。网页命令默认读取已保存 Cookie，也可以用 `--cookie` 或 `DOUYIN_COOKIE` 为单次运行传入。
+`-t` 支持 `post`、`favorite`、`music`、`hashtag`、`search`、`following`、`follower`、`collection`、`mix` 和 `aweme`。`collection` 只读取当前 Cookie 登录账号的收藏夹，因此不要传 `-u`。网页命令默认读取已保存 Cookie，也可以用 `--cookie` 或 `DOUYIN_COOKIE` 为单次运行传入。
 
 ### 抓取评论
 
@@ -206,6 +206,17 @@ douyin api comment-reply \
   --item-id "$DOUYIN_ITEM_ID" \
   --comment-id "$DOUYIN_COMMENT_ID" \
   --content "谢谢反馈"
+```
+
+发送私信需从回调事件取得 `to_user_id`、`msg_id` 和 `conversation_id`。默认场景是回复私信；首次进入会话时添加 `--scene im-enter-direct-msg`：
+
+```bash
+douyin api im-message-send \
+  --to-user-id "$DOUYIN_TO_USER_ID" \
+  --msg-id "$DOUYIN_MSG_ID" \
+  --conversation-id "$DOUYIN_CONVERSATION_ID" \
+  --text "你好，已收到" \
+  --yes
 ```
 
 通用请求仅接受当前 OpenAPI 基地址的同源路径：
