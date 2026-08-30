@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use reqwest::blocking::Client;
 use reqwest::header::{
-    HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, COOKIE, REFERER, USER_AGENT,
+    ACCEPT, ACCEPT_LANGUAGE, COOKIE, HeaderMap, HeaderValue, REFERER, USER_AGENT,
 };
 use serde_json::Value;
 
@@ -172,7 +172,7 @@ pub fn sign(function: &str, query: &str, user_agent: &str) -> Result<String, Str
 
 #[cfg(test)]
 mod tests {
-    use super::{sign, web_query_params, DEFAULT_USER_AGENT};
+    use super::{DEFAULT_USER_AGENT, sign, web_query_params};
     use crate::test_support::must;
 
     #[test]

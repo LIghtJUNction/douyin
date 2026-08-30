@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use reqwest::Url;
 use reqwest::blocking::{Client, RequestBuilder};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
-use reqwest::Url;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::err;
 
@@ -286,7 +286,7 @@ fn add_headers(
 
 #[cfg(test)]
 mod tests {
-    use super::{api_error, body_excerpt, im_message_body, OpenApiClient, RequestSpec};
+    use super::{OpenApiClient, RequestSpec, api_error, body_excerpt, im_message_body};
     use crate::test_support::must;
     use serde_json::json;
 

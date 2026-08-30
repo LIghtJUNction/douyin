@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::err;
 use crate::insights::{self, TextRecord};
-use crate::openapi::{im_message_body, OpenApiClient, RequestSpec};
+use crate::openapi::{OpenApiClient, RequestSpec, im_message_body};
 use crate::settings;
 
 const PROTOCOL_VERSION: &str = "2025-11-25";
@@ -61,9 +61,9 @@ fn handle_single_message(request: &Value) -> Option<Value> {
     };
     let method = request.get("method").and_then(Value::as_str);
     let Some(id) = object.get("id").cloned() else {
-        return method.is_none().then(|| {
-            error_response(Value::Null, -32600, "Invalid Request: missing method")
-        });
+        return method
+            .is_none()
+            .then(|| error_response(Value::Null, -32600, "Invalid Request: missing method"));
     };
     let result = match method {
         Some("initialize") => Ok(initialize(request)),

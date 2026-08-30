@@ -2,10 +2,10 @@ use std::collections::HashMap;
 use std::io::{self, Write};
 
 use clap::{Args, Subcommand, ValueEnum};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::err;
-use crate::openapi::{im_message_body, OpenApiClient, RequestSpec};
+use crate::openapi::{OpenApiClient, RequestSpec, im_message_body};
 use crate::settings;
 
 #[derive(Debug, Args)]
@@ -493,7 +493,7 @@ fn print_json(value: &Value) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{message_content, parse_json, parse_key_values, validate_text, MessageType};
+    use super::{MessageType, message_content, parse_json, parse_key_values, validate_text};
     use crate::test_support::{must, present};
     use serde_json::json;
 
@@ -512,13 +512,15 @@ mod tests {
             )),
             json!({"msg_type": 1, "text": {"text": "你好"}})
         );
-        assert!(message_content(
-            &MessageType::Text,
-            Some("https://example.com".to_owned()),
-            None,
-            None
-        )
-        .is_err());
+        assert!(
+            message_content(
+                &MessageType::Text,
+                Some("https://example.com".to_owned()),
+                None,
+                None
+            )
+            .is_err()
+        );
         assert!(validate_text(&"字".repeat(101), "评论内容", 100, false).is_err());
     }
 
