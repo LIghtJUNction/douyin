@@ -38,11 +38,33 @@ pub fn run_stdio() -> Result<(), String> {
 
 pub fn handle_message(request: &Value) -> Option<Value> {
     if let Some(messages) = request.as_array() {
-        let responses: Vec<_> = messages.iter().filter_map(handle_message).collect();
+        if messages.is_empty() {
+            return Some(error_response(
+                Value::Null,
+                -32600,
+                "Invalid Request: empty batch",
+            ));
+        }
+        let responses: Vec<_> = messages.iter().filter_map(handle_single_message).collect();
         return (!responses.is_empty()).then_some(Value::Array(responses));
     }
-    let id = request.get("id").cloned()?;
+    handle_single_message(request)
+}
+
+fn handle_single_message(request: &Value) -> Option<Value> {
+    let Some(object) = request.as_object() else {
+        return Some(error_response(
+            Value::Null,
+            -32600,
+            "Invalid Request: expected object",
+        ));
+    };
     let method = request.get("method").and_then(Value::as_str);
+    let Some(id) = object.get("id").cloned() else {
+        return method.is_none().then(|| {
+            error_response(Value::Null, -32600, "Invalid Request: missing method")
+        });
+    };
     let result = match method {
         Some("initialize") => Ok(initialize(request)),
         Some("ping") => Ok(json!({})),
@@ -692,5 +714,27 @@ mod tests {
         ])));
         assert_eq!(present(response.as_array()).len(), 1);
         assert_eq!(response[0]["id"], 4);
+    }
+
+    #[test]
+    fn invalid_requests_return_json_rpc_errors() {
+        let empty_batch = present(handle_message(&json!([])));
+        assert_eq!(empty_batch["error"]["code"], -32600);
+        assert!(empty_batch["id"].is_null());
+
+        let batch = present(handle_message(&json!([
+            1,
+            [],
+            {"jsonrpc":"2.0","id":7,"method":"ping"}
+        ])));
+        assert_eq!(batch[0]["error"]["code"], -32600);
+        assert!(batch[0]["id"].is_null());
+        assert_eq!(batch[1]["error"]["code"], -32600);
+        assert!(batch[1]["id"].is_null());
+        assert_eq!(batch[2]["id"], 7);
+
+        let missing_method = present(handle_message(&json!({"jsonrpc":"2.0"})));
+        assert_eq!(missing_method["error"]["code"], -32600);
+        assert!(missing_method["id"].is_null());
     }
 }
