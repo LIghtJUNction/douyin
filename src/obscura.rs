@@ -2,7 +2,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub fn manifest(version: &str, config_file: &Path) -> Value {
     json!({
