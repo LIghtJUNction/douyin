@@ -423,22 +423,31 @@ impl DemandAggregate {
     }
 }
 
-fn ranked_aggregates(values: HashMap<String, Aggregate>, top: usize, min_count: u64) -> Vec<Value> {
+fn ranked<T>(
+    values: HashMap<String, T>,
+    top: usize,
+    min_count: u64,
+    rank: impl Fn(&T) -> (u64, u64),
+) -> Vec<(String, T)> {
     let mut values: Vec<_> = values
         .into_iter()
-        .filter(|(_, value)| value.count >= min_count)
+        .filter(|(_, value)| rank(value).0 >= min_count)
         .collect();
     values.sort_by(|left, right| {
-        right
-            .1
-            .score
-            .cmp(&left.1.score)
-            .then_with(|| right.1.count.cmp(&left.1.count))
+        let (left_count, left_score) = rank(&left.1);
+        let (right_count, right_score) = rank(&right.1);
+        right_score
+            .cmp(&left_score)
+            .then_with(|| right_count.cmp(&left_count))
             .then_with(|| left.0.cmp(&right.0))
     });
+    values.truncate(top);
     values
+}
+
+fn ranked_aggregates(values: HashMap<String, Aggregate>, top: usize, min_count: u64) -> Vec<Value> {
+    ranked(values, top, min_count, |value| (value.count, value.score))
         .into_iter()
-        .take(top)
         .map(|(text, value)| json!({"text":text, "count":value.count, "score":value.score}))
         .collect()
 }
@@ -448,21 +457,8 @@ fn ranked_demands(
     top: usize,
     min_count: u64,
 ) -> Vec<Value> {
-    let mut values: Vec<_> = values
+    ranked(values, top, min_count, |value| (value.count, value.score))
         .into_iter()
-        .filter(|(_, value)| value.count >= min_count)
-        .collect();
-    values.sort_by(|left, right| {
-        right
-            .1
-            .score
-            .cmp(&left.1.score)
-            .then_with(|| right.1.count.cmp(&left.1.count))
-            .then_with(|| left.0.cmp(&right.0))
-    });
-    values
-        .into_iter()
-        .take(top)
         .map(|(text, value)| {
             json!({"text":text, "count":value.count, "score":value.score, "signals":value.signals})
         })
