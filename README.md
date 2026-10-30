@@ -1,22 +1,40 @@
-![douyin](https://socialify.git.ci/LIghtJUNction/douyin/image?description=1&font=Source%20Code%20Pro&forks=1&issues=1&language=1&owner=1&pattern=Circuit%20Board&stargazers=1&theme=Auto)
+<div align="center">
+  <h1>douyin-cli</h1>
+  <p><strong>把抖音网页工作流、官方 OpenAPI 和离线内容分析放进一个 Rust CLI。</strong></p>
+  <p>采集与下载 · 评论 · OAuth · 私信 · 统计 · stdio MCP</p>
 
-# douyin-cli
+  [![Crates.io](https://img.shields.io/crates/v/douyin-cli?style=flat-square&logo=rust)](https://crates.io/crates/douyin-cli)
+  [![AUR](https://img.shields.io/badge/AUR-douyin--cli-111111?style=flat-square&logo=archlinux)](https://aur.archlinux.org/packages/douyin-cli)
+  [![Rust](https://img.shields.io/badge/Rust-1.88%2B-111111?style=flat-square&logo=rust)](Cargo.toml)
+  [![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-111111?style=flat-square)](LICENSE)
 
-面向抖音开放平台与网页工作流的 Rust 命令行工具，支持网页采集与下载、评论抓取、离线元数据统计、官方 OAuth/OpenAPI 和 stdio MCP。
+  [安装](#安装) · [认证模型](#先理解认证模型) · [快速使用](#快速使用) · [MCP](#mcp-服务器) · [完整手册](USAGE.md)
+</div>
+
+## 三条能力线
+
+```text
+浏览器 Cookie ─→ 搜索 / 主页 / 单作品 / 网页评论 / 下载
+
+官方 OAuth ───→ 用户信息 / 官方评论 / 评论回复 / 私信 / MCP
+
+本地文件 ─────→ 热词 / 热梗 / 需求线索 / 作品元数据统计
+```
+
+三条线可以独立使用。离线分析不访问网络；网页 Cookie 不能替代 OpenAPI token，OAuth token 也不能替代网页 Cookie。
 
 ## 安装
 
-需要 Rust 1.88 或更高版本。网页采集和评论命令还需要系统中存在 `node`；其他命令不依赖 Node.js。
+需要 Rust 1.88 或更高版本。网页采集与评论功能还需要系统中存在 `node`；官方 OpenAPI 与离线统计不依赖 Node.js。
 
-Arch Linux 可通过 [AUR 的 douyin-cli 软件包](https://aur.archlinux.org/packages/douyin-cli) 安装：
+### Arch Linux
 
 ```bash
 paru -S douyin-cli
-# 或
-yay -S douyin-cli
+# 或：yay -S douyin-cli
 ```
 
-从 crates.io 安装稳定版：
+### crates.io
 
 ```bash
 cargo install douyin-cli --locked
@@ -24,13 +42,13 @@ douyin --version
 douyin --help
 ```
 
-更新到最新版本：
+更新：
 
 ```bash
 cargo install douyin-cli --locked --force
 ```
 
-从源码安装开发版：
+### 源码
 
 ```bash
 git clone https://github.com/LIghtJUNction/douyin.git
@@ -38,30 +56,27 @@ cd douyin
 cargo install --path . --locked
 ```
 
-## 选择登录方式
+## 先理解认证模型
 
-本项目有两套相互独立的认证方式：
-
-| 用途 | 登录方式 | 是否需要开放平台应用 |
+| 能力 | 凭据 | 是否需要开放平台应用 |
 | --- | --- | --- |
-| 搜索、主页作品、单作品下载、网页评论 | 浏览器 Cookie | 否 |
-| 官方用户信息、官方评论接口、私信消息、MCP | 官方 OAuth | 是 |
+| 网页搜索、主页作品、单作品、收藏、网页评论 | 浏览器 Cookie | 否 |
+| 官方用户信息、评论接口、私信、授权型 MCP 工具 | OAuth access token | 是 |
+| 本地洞察和统计 | 无 | 否 |
 
-Cookie 不能代替 OpenAPI token，OAuth token 也不能代替网页 Cookie。
+### 浏览器 Cookie
 
-### 使用浏览器 Cookie
-
-先在浏览器登录抖音网页端，从开发者工具的网络请求头复制完整 Cookie 值。不要包含 `Cookie:` 前缀，也不要把真实 Cookie 发到聊天、日志或 Git 仓库。
+在浏览器登录抖音网页端，从开发者工具的请求头复制完整 Cookie 值，不要包含 `Cookie:` 前缀：
 
 ```bash
-douyin auth cookie-login --cookie "sessionid=...; ttwid=...; 其他字段=..."
+douyin auth cookie-login --cookie "sessionid=...; ttwid=..."
 douyin auth cookie-status --offline
 douyin auth cookie-status
 ```
 
-`--offline` 只检查本地格式；不带该参数时会请求抖音登录态接口，尝试确认当前网页登录态。匿名网页接口即使返回成功也不能证明 Cookie 有效，因此不会作为登录依据。若遇到验证码、风控或上游接口变化，命令会明确报告“无法确认”，而不会误判为已登录。检查过程不会输出 Cookie 或响应正文。
+`--offline` 只验证本地格式；联网状态检查会请求登录态接口。若平台要求验证码、触发风控或接口发生变化，工具会报告“无法确认”，不会把匿名接口成功误判成已登录。
 
-也可以通过环境变量传入，避免每次添加 `--cookie`：
+也可只在当前 shell 注入：
 
 ```bash
 export DOUYIN_COOKIE="完整 Cookie 字符串"
@@ -69,17 +84,18 @@ douyin auth cookie-login
 unset DOUYIN_COOKIE
 ```
 
-退出并删除保存的 Cookie：
+清除本地 Cookie：
 
 ```bash
 douyin auth cookie-logout
 ```
 
-### 使用官方 OAuth
+> [!CAUTION]
+> Cookie、`client_secret` 和 token 都是凭据。不要发到聊天记录、命令日志、Issue 或 Git 仓库；不要采集、下载或处理你无权访问的数据。
 
-先在抖音开放平台创建应用，准备 `client_key`、`client_secret`、允许的回调地址和所需 scope。评论接口使用 `item.comment`；私信接口使用 `im.direct_message`，发送图片还需 `tool.image.upload`。
+### 官方 OAuth
 
-推荐使用本机回调监听。开放平台应用中需要允许 `http://127.0.0.1:8787/callback`：
+在抖音开放平台创建应用，配置允许的回调地址和 scope。推荐本机监听：
 
 ```bash
 export DOUYIN_CLIENT_KEY="你的 client_key"
@@ -92,7 +108,7 @@ douyin auth login \
   --callback-port 8787
 ```
 
-命令会输出授权链接和二维码，并在授权完成后自动保存 token。不能监听回调时，可以手动完成 code 交换：
+开放平台应用需允许 `http://127.0.0.1:8787/callback`。无法本地监听时，先生成授权链接，再手动交换回调 code：
 
 ```bash
 douyin auth login \
@@ -103,52 +119,42 @@ douyin auth login \
 douyin auth code --code "回调中的授权码"
 ```
 
-检查、刷新或清除授权：
-
 ```bash
-douyin auth status
 douyin auth status --json
 douyin auth refresh
 douyin auth logout
 ```
 
-## 基础用法
+评论接口使用 `item.comment`；私信使用 `im.direct_message`；图片发送还需 `tool.image.upload`。实际可用接口取决于应用审核、授权 scope 与平台规则。
 
-所有命令均公开显示：
+## 快速使用
 
-```bash
-douyin --help
-douyin auth --help
-douyin api --help
-douyin comment --help
-douyin insights --help
-douyin stats --help
-```
+### 搜索与下载
 
-### 搜索和采集
-
-仅采集元数据，不下载媒体：
+只采集元数据：
 
 ```bash
 douyin -u "搜索关键词" -t search -l 5 --no-download
 ```
 
-下载单个作品或账号主页作品：
+下载单作品或主页作品：
 
 ```bash
 douyin -u "https://www.douyin.com/video/作品ID" -t aweme
 douyin -u "https://www.douyin.com/user/用户ID" -t post -l 20
 ```
 
-批量读取目标文件，并保存标题和封面：
+批量目标：
 
 ```bash
-douyin -u targets.txt -p ./downloads --download-title --download-cover
+douyin -u targets.txt -p ./downloads \
+  --download-title \
+  --download-cover
 ```
 
-`-t` 支持 `post`、`favorite`、`music`、`hashtag`、`search`、`following`、`follower`、`collection`、`mix` 和 `aweme`。`collection` 只读取当前 Cookie 登录账号的收藏夹，因此不要传 `-u`。网页命令默认读取已保存 Cookie，也可以用 `--cookie` 或 `DOUYIN_COOKIE` 为单次运行传入。
+`-t` 支持 `post`、`favorite`、`music`、`hashtag`、`search`、`following`、`follower`、`collection`、`mix` 和 `aweme`。`collection` 读取当前 Cookie 账号收藏，不传 `-u`。
 
-### 抓取评论
+### 评论
 
 ```bash
 douyin comment "https://www.douyin.com/video/作品ID" --limit 100
@@ -160,36 +166,29 @@ douyin comment "https://www.douyin.com/video/作品ID" \
   --output comments.jsonl
 ```
 
-输出格式包括 `raw`、`chatml-jsonl` 和 `chatml-json`。
+输出支持 `raw`、`chatml-jsonl` 与 `chatml-json`。
 
-### 热词、热梗与需求发现
-
-对本地文件或 stdin 做确定性的离线频次分析，不访问网络，也不需要 Cookie 或 OAuth：
+### 离线热词与需求线索
 
 ```bash
 douyin insights comments.json --top 20 --min-count 2
 cat comments.jsonl | douyin insights - --format markdown -o insights.md
 ```
 
-输入支持 raw comments JSON（包括 `replies`）、crawler JSON 中的 `desc`/`text`/`tag` 与 `text_extra[].tag_name`、ChatML JSON/JSONL，以及每行一条记录的纯文本。JSON 输出包含 `input_count`、`hot_words`、`hot_memes` 和 `demands`；需求项包含原文 `text`、`count`、互动权重参与计算的 `score` 与命中的 `signals`。
+分析过程是确定性的：停用词过滤、重复频次、互动权重和意图关键词匹配。它不会调用模型，也不代表工具真正理解语义。输出中的“需求”是可解释线索，不是市场结论。
 
-这些结果来自停用词、重复频次和意图关键词等可解释启发式规则，不表示算法理解了文本的真实语义。
-
-### 作品表现离线统计
-
-对 crawler JSON 的作品元数据做离线汇总和排名，不读取或分析媒体画面、声音：
+### 离线作品统计
 
 ```bash
-douyin stats search_陈震同学.json --author 陈震同学 --sort score --top 10
+douyin stats search_陈震同学.json \
+  --author 陈震同学 \
+  --sort score \
+  --top 10
 ```
 
-输入支持扁平作品数组、单个作品对象，以及 `items`、`aweme_list`、`data` 数组容器。`--sort` 支持 `score`、`interactions`、`likes`、`comments`、`collects`、`shares`、`duration`、`latest`；输出可选 JSON 或 Markdown。
+综合分只在当前输入集合内比较。它对点赞、评论、收藏、分享分别做 `ln(1+x)` 归一化，再按 35%、20%、20%、25% 加权。由于采集元数据不含播放量，这不是互动率。
 
-综合分在当前匹配集合内分别使用 `ln(1+x)/ln(1+max)` 归一化点赞、评论、收藏、分享，并按 35%、20%、20%、25% 加权到 0–100 分。由于 crawler 元数据没有播放量，这个分数不是互动率，只适合在本次匹配集合内比较。
-
-### 调用官方 OpenAPI
-
-完成 OAuth 后，命令会自动读取已保存的 `access_token` 和 `open_id`：
+### 官方 OpenAPI
 
 ```bash
 douyin api userinfo
@@ -199,7 +198,7 @@ douyin api comment-replies \
   --comment-id "$DOUYIN_COMMENT_ID"
 ```
 
-回复评论属于写操作，默认要求确认：
+写操作默认要求确认：
 
 ```bash
 douyin api comment-reply \
@@ -208,7 +207,7 @@ douyin api comment-reply \
   --content "谢谢反馈"
 ```
 
-发送私信需从回调事件取得 `to_user_id`、`msg_id` 和 `conversation_id`。默认场景是回复私信；首次进入会话时添加 `--scene im-enter-direct-msg`：
+私信回复：
 
 ```bash
 douyin api im-message-send \
@@ -219,7 +218,7 @@ douyin api im-message-send \
   --yes
 ```
 
-通用请求仅接受当前 OpenAPI 基地址的同源路径：
+通用请求只接受当前 OpenAPI 基地址的同源路径，避免把 token 发往任意主机：
 
 ```bash
 douyin api request GET /oauth/userinfo/ \
@@ -228,13 +227,11 @@ douyin api request GET /oauth/userinfo/ \
 
 ## MCP 服务器
 
-`douyin mcp` 通过 stdio 提供官方 OpenAPI 工具，并复用已保存的 OAuth 授权；离线洞察工具 `hot_words`、`hot_memes`、`demand_discovery` 只接收 `texts`、`top`、`min_count`，不需要授权。
+`douyin mcp` 通过 stdio 暴露官方 OpenAPI 工具，并复用已保存的 OAuth。`hot_words`、`hot_memes` 和 `demand_discovery` 是纯离线工具，不需要授权。
 
 ```bash
 douyin mcp
 ```
-
-MCP 客户端配置：
 
 ```json
 {
@@ -247,39 +244,41 @@ MCP 客户端配置：
 }
 ```
 
-命令行配置示例：
-
 ```bash
 claude mcp add douyin -- douyin mcp
 codex mcp add douyin -- douyin mcp
 ```
 
-## 配置和环境变量
+MCP 只是把已有命令变成结构化工具调用，不会绕过 OAuth、scope、确认或平台权限。
 
-默认配置文件位置：
+## 配置
 
-- Linux/macOS：`~/.config/douyin-cli/config/settings.json`
-- Windows：`%APPDATA%\douyin-cli\config\settings.json`
-- 测试隔离：设置 `DOUYIN_HOME`
+| 平台 | 默认路径 |
+| --- | --- |
+| Linux / macOS | `~/.config/douyin-cli/config/settings.json` |
+| Windows | `%APPDATA%\douyin-cli\config\settings.json` |
+| 测试隔离 | 通过 `DOUYIN_HOME` 指定 |
 
-常用环境变量：
+常用环境变量：`DOUYIN_COOKIE`、`DOUYIN_CLIENT_KEY`、`DOUYIN_CLIENT_SECRET`、`DOUYIN_ACCESS_TOKEN`、`DOUYIN_HOME`。
 
-- `DOUYIN_COOKIE`
-- `DOUYIN_CLIENT_KEY`
-- `DOUYIN_CLIENT_SECRET`
-- `DOUYIN_ACCESS_TOKEN`
-- `DOUYIN_HOME`
+所有参数以 CLI 自带帮助为准：
 
-完整参数和进阶示例见 [USAGE.md](USAGE.md)。
+```bash
+douyin --help
+douyin auth --help
+douyin api --help
+douyin comment --help
+douyin insights --help
+douyin stats --help
+```
+
+更多示例见 [USAGE.md](USAGE.md)。
 
 ## Agent Skill
 
-安装本仓库配套 skill：
-
 ```bash
 bunx skills add LIghtJUNction/douyin -g
-# 或
-npx skills add LIghtJUNction/douyin -g
+# 或：npx skills add LIghtJUNction/douyin -g
 ```
 
 ## 开发验证
@@ -291,3 +290,7 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo build --release --locked
 cargo package --locked
 ```
+
+## License
+
+[AGPL-3.0-or-later](LICENSE)
