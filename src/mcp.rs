@@ -1,740 +1,415 @@
-use std::collections::HashMap;
-use std::io::{self, BufRead, Write};
-
+//! MCP transport and protocol negotiation are provided by the official SDK.
+use reqwest::Method;
+use rmcp::{
+    ErrorData, RoleServer, ServerHandler, ServiceExt,
+    model::{
+        CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
+        ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
+        ToolAnnotations,
+    },
+    service::RequestContext,
+};
 use serde_json::{Map, Value, json};
 
-use crate::err;
-use crate::insights::{self, TextRecord};
-use crate::openapi::{OpenApiClient, RequestSpec, im_message_body};
-use crate::settings;
+use crate::{
+    api, insights, oauth,
+    openapi::{OpenApiClient, Request},
+};
 
-const PROTOCOL_VERSION: &str = "2025-11-25";
-const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
+#[derive(Clone)]
+struct DouyinServer {
+    tools: Vec<Tool>,
+}
+
+impl ServerHandler for DouyinServer {
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new("douyin",env!("CARGO_PKG_VERSION")))
+            .with_instructions("离线分析不联网。官方 OpenAPI 使用独立 OAuth；ADB 导入用于 native_me 和 native_live_permissions。写操作必须显式 confirmed=true。")
+    }
+    fn get_tool(&self, name: &str) -> Option<Tool> {
+        self.tools.iter().find(|tool| tool.name == name).cloned()
+    }
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, ErrorData> {
+        Ok(ListToolsResult::with_all_items(self.tools.clone()))
+    }
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        if self.get_tool(&request.name).is_none() {
+            return Err(ErrorData::invalid_params("未知工具名称", None));
+        }
+        let name = request.name.into_owned();
+        let args = request.arguments.unwrap_or_default();
+        // reqwest::blocking and deterministic analyses must not block MCP's
+        // async control loop, cancellation handling, or protocol responses.
+        let result = tokio::task::spawn_blocking(move || execute(&name, &args))
+            .await
+            .map_err(|_| ErrorData::internal_error("工具执行线程失败", None))?;
+        let result = match result {
+            Ok(value) => {
+                let text = serde_json::to_string(&value)
+                    .map_err(|_| ErrorData::internal_error("工具结果序列化失败", None))?;
+                let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);
+                result.structured_content = Some(value);
+                result
+            }
+            Err(error) => CallToolResult::error(vec![ContentBlock::text(error)]),
+        };
+        Ok(result.into())
+    }
+}
 
 pub fn run_stdio() -> Result<(), String> {
-    let stdin = io::stdin();
-    let mut stdout = io::stdout().lock();
-    for line in stdin.lock().lines() {
-        let line = line.map_err(err)?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let request: Value = match serde_json::from_str(&line) {
-            Ok(value) => value,
-            Err(error) => {
-                write_message(
-                    &mut stdout,
-                    &error_response(Value::Null, -32700, &format!("Parse error: {error}")),
-                )?;
-                continue;
-            }
-        };
-        if let Some(response) = handle_message(&request) {
-            write_message(&mut stdout, &response)?;
-        }
+    let server = DouyinServer { tools: tools()? };
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| "无法创建 MCP 运行时")?
+        .block_on(async move {
+            let service = server
+                .serve(rmcp::transport::stdio())
+                .await
+                .map_err(|_| "MCP 初始化失败")?;
+            service.waiting().await.map_err(|_| "MCP 会话异常结束")?;
+            Ok(())
+        })
+}
+
+fn tools() -> Result<Vec<Tool>, String> {
+    let mut rows = Vec::new();
+    let insight_schema = json!({"type":"object","properties":{"texts":{"type":"array","items":{"type":"string"}},"top":{"type":"integer","minimum":0,"default":20},"min_count":{"type":"integer","minimum":1,"default":2}},"required":["texts"]});
+    for (name, description) in [
+        ("hot_words", "离线统计热词及带权频次"),
+        ("hot_memes", "离线提取重复短句和热梗候选"),
+        ("demand_discovery", "离线提取带有需求关键词的原句"),
+    ] {
+        rows.push(tool(
+            name,
+            description,
+            insight_schema.clone(),
+            true,
+            false,
+        )?);
     }
-    Ok(())
+    rows.push(tool(
+        "auth_status",
+        "只检查已保存的官方 OAuth 配置，不联网",
+        schema(json!({}), &[]),
+        true,
+        false,
+    )?);
+    rows.push(tool(
+        "native_live_permissions",
+        "使用导入的安卓 Token 独立查询当前账号直播配置，不创建直播间",
+        schema(json!({}), &[]),
+        true,
+        true,
+    )?);
+    rows.push(tool(
+        "native_me",
+        "使用 ADB 导入的登录态读取当前账号资料",
+        schema(json!({}), &[]),
+        true,
+        true,
+    )?);
+    rows.push(tool(
+        "userinfo",
+        "获取官方授权账号资料",
+        authorized_schema(json!({}), &[]),
+        true,
+        true,
+    )?);
+    let page = json!({"item_id":{"type":"string","minLength":1},"cursor":{"type":"integer","minimum":0,"default":0},"count":{"type":"integer","minimum":1,"maximum":20,"default":20},"sort_type":{"type":"integer","minimum":0,"maximum":2}});
+    rows.push(tool(
+        "comment_list",
+        "获取官方视频评论列表",
+        authorized_schema(page.clone(), &["item_id"]),
+        true,
+        true,
+    )?);
+    let mut reply = page;
+    reply["comment_id"] = json!({"type":"string","minLength":1});
+    rows.push(tool(
+        "comment_replies",
+        "获取官方评论回复列表",
+        authorized_schema(reply, &["item_id", "comment_id"]),
+        true,
+        true,
+    )?);
+    rows.push(tool("comment_reply","通过官方 OpenAPI 发送评论或回复；需要 confirmed=true",authorized_schema(json!({
+        "item_id":{"type":"string","minLength":1},"comment_id":{"type":"string"},"content":{"type":"string","minLength":1,"maxLength":100},"confirmed":{"type":"boolean","default":false}
+    }),&["item_id","content"]),false,true)?);
+    rows.push(tool("im_message_send","通过官方 OpenAPI 发送文字、图片或视频私信；需要 confirmed=true",authorized_schema(json!({
+        "to_user_id":{"type":"string","minLength":1},"scene":{"type":"string","enum":["im_reply_msg","im_enter_direct_msg"],"default":"im_reply_msg"},
+        "msg_id":{"type":"string","minLength":1},"conversation_id":{"type":"string","minLength":1},"message_type":{"type":"string","enum":["text","image","video"],"default":"text"},
+        "text":{"type":"string"},"media_id":{"type":"string"},"item_id":{"type":"string"},"confirmed":{"type":"boolean","default":false}
+    }),&["to_user_id","msg_id","conversation_id"]),false,true)?);
+    rows.push(tool("openapi_request","同源通用官方 OpenAPI；写操作需要 confirmed=true",schema(json!({
+        "method":{"type":"string","enum":["GET","POST","PUT","PATCH","DELETE","HEAD","OPTIONS"]},"path":{"type":"string"},"token":{"type":"string"},
+        "params":{"type":"object","additionalProperties":{"type":"string"}},"form":{"type":"object","additionalProperties":{"type":"string"}},"json":{"type":"object"},"confirmed":{"type":"boolean","default":false}
+    }),&["method","path"]),false,true)?);
+    Ok(rows)
+}
+fn schema(properties: Value, required: &[&str]) -> Value {
+    json!({"type":"object","properties":properties,"required":required,"additionalProperties":false})
+}
+fn authorized_schema(mut properties: Value, required: &[&str]) -> Value {
+    properties["token"] = json!({"type":"string"});
+    properties["open_id"] = json!({"type":"string"});
+    schema(properties, required)
+}
+fn tool(
+    name: &'static str,
+    description: &'static str,
+    schema: Value,
+    read: bool,
+    network: bool,
+) -> Result<Tool, String> {
+    let schema = schema.as_object().cloned().ok_or("MCP 工具 schema 无效")?;
+    Ok(Tool::new(name, description, schema).with_annotations(
+        ToolAnnotations::new()
+            .read_only(read)
+            .destructive(!read)
+            .idempotent(read)
+            .open_world(network),
+    ))
 }
 
-pub fn handle_message(request: &Value) -> Option<Value> {
-    if let Some(messages) = request.as_array() {
-        if messages.is_empty() {
-            return Some(error_response(
-                Value::Null,
-                -32600,
-                "Invalid Request: empty batch",
-            ));
-        }
-        let responses: Vec<_> = messages.iter().filter_map(handle_single_message).collect();
-        return (!responses.is_empty()).then_some(Value::Array(responses));
-    }
-    handle_single_message(request)
-}
-
-fn handle_single_message(request: &Value) -> Option<Value> {
-    let Some(object) = request.as_object() else {
-        return Some(error_response(
-            Value::Null,
-            -32600,
-            "Invalid Request: expected object",
-        ));
-    };
-    let method = request.get("method").and_then(Value::as_str);
-    let Some(id) = object.get("id").cloned() else {
-        return method
-            .is_none()
-            .then(|| error_response(Value::Null, -32600, "Invalid Request: missing method"));
-    };
-    let result = match method {
-        Some("initialize") => Ok(initialize(request)),
-        Some("ping") => Ok(json!({})),
-        Some("tools/list") => Ok(json!({"tools": tools()})),
-        Some("tools/call") => call_tool(request),
-        Some(method) => {
-            return Some(error_response(
-                id,
-                -32601,
-                &format!("Method not found: {method}"),
-            ));
-        }
-        None => {
-            return Some(error_response(
-                id,
-                -32600,
-                "Invalid Request: missing method",
-            ));
-        }
-    };
-    Some(match result {
-        Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
-        Err(ToolError::Unknown(name)) => {
-            error_response(id, -32602, &format!("Unknown tool: {name}"))
-        }
-        Err(ToolError::Execution(message)) => json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "result": {
-                "content": [{"type": "text", "text": message}],
-                "isError": true
-            }
-        }),
-    })
-}
-
-fn initialize(request: &Value) -> Value {
-    let requested = request
-        .pointer("/params/protocolVersion")
-        .and_then(Value::as_str)
-        .unwrap_or(PROTOCOL_VERSION);
-    let version = match requested {
-        "2024-11-05" | "2025-03-26" | "2025-06-18" | "2025-11-25" => requested,
-        _ => PROTOCOL_VERSION,
-    };
-    json!({
-        "protocolVersion": version,
-        "capabilities": {"tools": {"listChanged": false}},
-        "serverInfo": {"name": "douyin", "version": SERVER_VERSION},
-        "instructions": "抖音开放平台 OpenAPI MCP 服务器。默认读取 douyin auth 保存的 access_token/open_id，也可以在工具参数中显式传入。"
-    })
-}
-
-fn tools() -> Vec<Value> {
-    vec![
-        tool("hot_words", "离线发现输入文本中的热词。基于可解释的频次启发式，不表示理解真实语义。", insights_schema(), true),
-        tool("hot_memes", "离线发现重复短句、口头禅、emoji 与固定表达。", insights_schema(), true),
-        tool("demand_discovery", "离线提取包含购买、求助、功能或问题意图信号的原句。", insights_schema(), true),
-        tool("auth_status", "查看本机是否已保存抖音开放平台授权信息。", json!({"type":"object","properties":{}}), true),
-        tool("userinfo", "获取官方授权用户信息。", auth_schema(json!({})), true),
-        tool("comment_list", "获取官方接口中的视频评论列表。", auth_schema(json!({
-            "item_id":{"type":"string"}, "cursor":{"type":"integer","default":0,"minimum":0},
-            "count":{"type":"integer","default":20,"minimum":1,"maximum":20},
-            "sort_type":{"type":"integer","enum":[0,1,2]}
-        })).with_required(&["item_id"]), true),
-        tool("comment_replies", "获取官方接口中的评论回复列表。", auth_schema(json!({
-            "item_id":{"type":"string"}, "comment_id":{"type":"string"}, "cursor":{"type":"integer","default":0,"minimum":0},
-            "count":{"type":"integer","default":20,"minimum":1,"maximum":20},
-            "sort_type":{"type":"integer","enum":[0,1,2]}
-        })).with_required(&["item_id", "comment_id"]), true),
-        tool("comment_reply", "通过官方 OpenAPI 回复视频或评论。", auth_schema(json!({
-            "item_id":{"type":"string"}, "content":{"type":"string","minLength":1,"maxLength":100}, "comment_id":{"type":"string"}
-        })).with_required(&["item_id", "content"]), false),
-        tool("im_message_send", "通过官方私信接口回复或首次进入会话。", auth_schema(json!({
-            "to_user_id":{"type":"string"},
-            "scene":{"type":"string","enum":["im_reply_msg","im_enter_direct_msg"],"default":"im_reply_msg"},
-            "msg_id":{"type":"string"}, "conversation_id":{"type":"string"},
-            "message_type":{"type":"string","enum":["text","image","video"],"default":"text"},
-            "text":{"type":"string","minLength":1,"maxLength":1000}, "media_id":{"type":"string"}, "item_id":{"type":"string"}
-        })).with_required(&["to_user_id", "msg_id", "conversation_id"]), false),
-        tool("openapi_request", "调用任意官方 OpenAPI 路径。", json!({
-            "type":"object",
-            "properties":{
-                "method":{"type":"string"}, "path":{"type":"string"}, "token":{"type":"string"},
-                "params":{"type":"object","additionalProperties":{"type":"string"}},
-                "json_body":{"type":["object","array"]}, "form":{"type":"object","additionalProperties":{"type":"string"}},
-                "headers":{"type":"object","additionalProperties":{"type":"string"}}
-            },
-            "required":["method","path"]
-        }), false),
-    ]
-}
-
-fn insights_schema() -> Value {
-    json!({
-        "type":"object",
-        "properties":{
-            "texts":{"type":"array","items":{"type":"string"}},
-            "top":{"type":"integer","default":20,"minimum":0},
-            "min_count":{"type":"integer","default":2,"minimum":1}
-        },
-        "required":["texts"]
-    })
-}
-
-fn tool(name: &str, description: &str, schema: Value, read_only: bool) -> Value {
-    json!({
-        "name": name,
-        "description": description,
-        "inputSchema": schema,
-        "annotations": {
-            "readOnlyHint": read_only,
-            "destructiveHint": false,
-            "idempotentHint": read_only,
-            "openWorldHint": true
-        }
-    })
-}
-
-trait SchemaExt {
-    fn with_required(self, required: &[&str]) -> Value;
-}
-
-impl SchemaExt for Value {
-    fn with_required(mut self, required: &[&str]) -> Value {
-        self["required"] = json!(required);
-        self
-    }
-}
-
-fn auth_schema(extra: Value) -> Value {
-    let mut properties = extra.as_object().cloned().unwrap_or_default();
-    properties.insert("token".to_owned(), json!({"type":"string"}));
-    properties.insert("open_id".to_owned(), json!({"type":"string"}));
-    json!({"type":"object", "properties": properties})
-}
-
-fn call_tool(request: &Value) -> Result<Value, ToolError> {
-    let name = request
-        .pointer("/params/name")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ToolError::Execution("缺少工具名称".to_owned()))?;
-    let args = request
-        .pointer("/params/arguments")
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-    let result = execute_tool(name, &args)?;
-    let text = serde_json::to_string(&result).map_err(execution)?;
-    Ok(json!({
-        "content": [{"type": "text", "text": text}],
-        "structuredContent": result,
-        "isError": false
-    }))
-}
-
-fn execute_tool(name: &str, args: &Map<String, Value>) -> Result<Value, ToolError> {
+fn execute(name: &str, args: &Map<String, Value>) -> Result<Value, String> {
     if matches!(name, "hot_words" | "hot_memes" | "demand_discovery") {
-        return execute_insights_tool(name, args);
+        let texts = args
+            .get("texts")
+            .and_then(Value::as_array)
+            .ok_or("texts 必须是字符串数组")?;
+        let records = texts
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .map(|text| insights::TextRecord::new(text, None))
+                    .ok_or("texts 包含非字符串记录".to_owned())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let top = number(args, "top", 20, 0, 10_000)? as usize;
+        let min = number(args, "min_count", 2, 1, u64::MAX)?;
+        let result = insights::analyze(&records, top, min);
+        let key = match name {
+            "hot_words" => "hot_words",
+            "hot_memes" => "hot_memes",
+            _ => "demands",
+        };
+        return Ok(json!({"input_count":result["input_count"],"items":result[key]}));
     }
     if name == "auth_status" {
-        let saved = saved_openapi()?;
-        return Ok(json!({
-            "authorized": saved_string(&saved, "accessToken").is_some() && saved_string(&saved, "openId").is_some(),
-            "client_key_saved": saved_string(&saved, "clientKey").is_some(),
-            "open_id": saved_string(&saved, "openId"),
-            "scopes": saved.get("scopes").cloned().unwrap_or_else(|| json!([])),
-            "expires_in": saved.get("expiresIn").cloned().unwrap_or_else(|| json!(0))
-        }));
-    }
-    let client = OpenApiClient::new().map_err(ToolError::Execution)?;
-    match name {
-        "userinfo" => {
-            let (token, open_id) = resolve_auth(args)?;
-            request(
-                &client,
-                "GET",
-                "/oauth/userinfo/",
-                &token,
-                Some(HashMap::from([("open_id".to_owned(), open_id)])),
-                None,
-            )
-        }
-        "comment_list" => {
-            let (token, open_id) = resolve_auth(args)?;
-            let mut params = HashMap::from([
-                ("open_id".to_owned(), open_id),
-                ("item_id".to_owned(), required_string(args, "item_id")?),
-                (
-                    "cursor".to_owned(),
-                    bounded_integer(args, "cursor", 0, 0, i64::MAX)?.to_string(),
-                ),
-                (
-                    "count".to_owned(),
-                    bounded_integer(args, "count", 20, 1, 20)?.to_string(),
-                ),
-            ]);
-            insert_optional_integer(args, &mut params, "sort_type", 0, 2)?;
-            request(
-                &client,
-                "GET",
-                "/item/comment/list/",
-                &token,
-                Some(params),
-                None,
-            )
-        }
-        "comment_replies" => {
-            let (token, open_id) = resolve_auth(args)?;
-            let mut params = HashMap::from([
-                ("open_id".to_owned(), open_id),
-                ("item_id".to_owned(), required_string(args, "item_id")?),
-                (
-                    "comment_id".to_owned(),
-                    required_string(args, "comment_id")?,
-                ),
-                (
-                    "cursor".to_owned(),
-                    bounded_integer(args, "cursor", 0, 0, i64::MAX)?.to_string(),
-                ),
-                (
-                    "count".to_owned(),
-                    bounded_integer(args, "count", 20, 1, 20)?.to_string(),
-                ),
-            ]);
-            insert_optional_integer(args, &mut params, "sort_type", 0, 2)?;
-            request(
-                &client,
-                "GET",
-                "/item/comment/reply/list/",
-                &token,
-                Some(params),
-                None,
-            )
-        }
-        "comment_reply" => {
-            let (token, open_id) = resolve_auth(args)?;
-            let content = required_string(args, "content")?;
-            validate_text(&content, "content", 100, false)?;
-            let mut body = Map::from_iter([
-                (
-                    "item_id".to_owned(),
-                    json!(required_string(args, "item_id")?),
-                ),
-                ("content".to_owned(), json!(content)),
-            ]);
-            if let Some(value) = optional_string(args, "comment_id") {
-                body.insert("comment_id".to_owned(), json!(value));
-            }
-            request(
-                &client,
-                "POST",
-                "/item/comment/reply/",
-                &token,
-                Some(HashMap::from([("open_id".to_owned(), open_id)])),
-                Some(Value::Object(body)),
-            )
-        }
-        "im_message_send" => {
-            let (token, open_id) = resolve_auth(args)?;
-            let message_type =
-                optional_string(args, "message_type").unwrap_or_else(|| "text".to_owned());
-            let (code, kind, key, source, error) = match message_type.as_str() {
-                "text" => (1, "text", "text", "text", "message_type=text 需要 text"),
-                "image" => (
-                    2,
-                    "image",
-                    "media_id",
-                    "media_id",
-                    "message_type=image 需要 media_id",
-                ),
-                "video" => (
-                    3,
-                    "video",
-                    "item_id",
-                    "item_id",
-                    "message_type=video 需要 item_id",
-                ),
-                value => return Err(ToolError::Execution(format!("不支持的私信类型: {value}"))),
-            };
-            let value = optional_string(args, source)
-                .ok_or_else(|| ToolError::Execution(error.to_owned()))?;
-            if message_type == "text" {
-                validate_text(&value, "text", 1_000, true)?;
-            }
-            let scene = optional_string(args, "scene").unwrap_or_else(|| "im_reply_msg".to_owned());
-            if !matches!(scene.as_str(), "im_reply_msg" | "im_enter_direct_msg") {
-                return Err(ToolError::Execution(format!("不支持的私信场景: {scene}")));
-            }
-            let content = Value::Object(Map::from_iter([
-                ("msg_type".to_owned(), json!(code)),
-                (
-                    kind.to_owned(),
-                    Value::Object(Map::from_iter([(key.to_owned(), json!(value))])),
-                ),
-            ]));
-            let body = im_message_body(
-                &required_string(args, "to_user_id")?,
-                &scene,
-                &required_string(args, "msg_id")?,
-                &required_string(args, "conversation_id")?,
-                content,
-            );
-            request(
-                &client,
-                "POST",
-                "/im/send/msg/",
-                &token,
-                Some(HashMap::from([("open_id".to_owned(), open_id)])),
-                Some(body),
-            )
-        }
-        "openapi_request" => {
-            let saved = saved_openapi()?;
-            let token = optional_string(args, "token")
-                .or_else(|| saved_string(&saved, "accessToken"))
-                .ok_or_else(|| {
-                    ToolError::Execution(
-                        "调用 OpenAPI 需要 access-token 或 client-token".to_owned(),
-                    )
-                })?;
-            client
-                .request(RequestSpec {
-                    method: &required_string(args, "method")?,
-                    path: &required_string(args, "path")?,
-                    token: Some(&token),
-                    params: string_map(args, "params")?,
-                    json_body: args.get("json_body").cloned(),
-                    form: string_map(args, "form")?,
-                    headers: string_map(args, "headers")?,
-                    auth_required: true,
-                })
-                .map_err(ToolError::Execution)
-        }
-        value => Err(ToolError::Unknown(value.to_owned())),
-    }
-}
-
-fn execute_insights_tool(name: &str, args: &Map<String, Value>) -> Result<Value, ToolError> {
-    let texts = args
-        .get("texts")
-        .and_then(Value::as_array)
-        .ok_or_else(|| ToolError::Execution("texts 必须是字符串数组".to_owned()))?;
-    let records = texts
-        .iter()
-        .map(|value| {
-            value
-                .as_str()
-                .map(|text| TextRecord::new(text, None))
-                .ok_or_else(|| ToolError::Execution("texts 必须是字符串数组".to_owned()))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let top = non_negative_integer(args, "top", 20)?;
-    let min_count = positive_integer(args, "min_count", 2)?;
-    let result = insights::analyze(&records, top, min_count);
-    let key = match name {
-        "hot_words" => "hot_words",
-        "hot_memes" => "hot_memes",
-        "demand_discovery" => "demands",
-        _ => return Err(ToolError::Unknown(name.to_owned())),
-    };
-    Ok(json!({
-        "input_count": result["input_count"],
-        key: result[key]
-    }))
-}
-
-fn request(
-    client: &OpenApiClient,
-    method: &str,
-    path: &str,
-    token: &str,
-    params: Option<HashMap<String, String>>,
-    json_body: Option<Value>,
-) -> Result<Value, ToolError> {
-    client
-        .request(RequestSpec {
-            method,
-            path,
-            token: Some(token),
-            params,
-            json_body,
-            auth_required: true,
-            ..RequestSpec::default()
-        })
-        .map_err(ToolError::Execution)
-}
-
-fn resolve_auth(args: &Map<String, Value>) -> Result<(String, String), ToolError> {
-    let saved = saved_openapi()?;
-    let token = optional_string(args, "token")
-        .or_else(|| saved_string(&saved, "accessToken"))
-        .ok_or_else(|| {
-            ToolError::Execution("缺少 access_token，请先运行 douyin auth login".to_owned())
-        })?;
-    let open_id = optional_string(args, "open_id")
-        .or_else(|| saved_string(&saved, "openId"))
-        .ok_or_else(|| {
-            ToolError::Execution("缺少 open_id，请先运行 douyin auth login".to_owned())
-        })?;
-    Ok((token, open_id))
-}
-
-fn saved_openapi() -> Result<Map<String, Value>, ToolError> {
-    settings::load()
-        .map(|data| settings::openapi(&data))
-        .map_err(execution)
-}
-
-fn required_string(args: &Map<String, Value>, key: &str) -> Result<String, ToolError> {
-    optional_string(args, key).ok_or_else(|| ToolError::Execution(format!("缺少必填参数: {key}")))
-}
-
-fn optional_string(args: &Map<String, Value>, key: &str) -> Option<String> {
-    args.get(key)
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-}
-
-fn saved_string(args: &Map<String, Value>, key: &str) -> Option<String> {
-    optional_string(args, key)
-}
-
-fn bounded_integer(
-    args: &Map<String, Value>,
-    key: &str,
-    default: i64,
-    minimum: i64,
-    maximum: i64,
-) -> Result<i64, ToolError> {
-    let value = args
-        .get(key)
-        .map(|value| {
-            value
-                .as_i64()
-                .ok_or_else(|| ToolError::Execution(format!("{key} 必须是整数")))
-        })
-        .transpose()?
-        .unwrap_or(default);
-    if !(minimum..=maximum).contains(&value) {
-        return Err(ToolError::Execution(format!(
-            "{key} 必须在 {minimum}..={maximum} 范围内"
-        )));
-    }
-    Ok(value)
-}
-
-fn insert_optional_integer(
-    args: &Map<String, Value>,
-    output: &mut HashMap<String, String>,
-    key: &str,
-    minimum: i64,
-    maximum: i64,
-) -> Result<(), ToolError> {
-    if args.contains_key(key) {
-        output.insert(
-            key.to_owned(),
-            bounded_integer(args, key, minimum, minimum, maximum)?.to_string(),
+        let saved = oauth::load()?;
+        return Ok(
+            json!({"authorized":oauth::field(&saved,"accessToken").is_some() && oauth::field(&saved,"openId").is_some(),"client_key_saved":oauth::field(&saved,"clientKey").is_some(),"open_id":saved["openId"],"scopes":saved["scopes"],"expires_in":saved["expiresIn"]}),
         );
     }
-    Ok(())
+    if name == "native_me" {
+        return crate::net::NativeClient::saved()?.me();
+    }
+    if name == "native_live_permissions" {
+        return crate::live::permission_summary(
+            &crate::net::NativeClient::saved()?.live_permissions()?,
+        );
+    }
+    if name == "openapi_request" {
+        let method = Method::from_bytes(required(args, "method")?.as_bytes())
+            .map_err(|_| "HTTP method 无效")?;
+        if !matches!(
+            method,
+            Method::GET
+                | Method::POST
+                | Method::PUT
+                | Method::PATCH
+                | Method::DELETE
+                | Method::HEAD
+                | Method::OPTIONS
+        ) {
+            return Err("HTTP method 不受支持".into());
+        }
+        if !matches!(method, Method::GET | Method::HEAD | Method::OPTIONS) {
+            confirmed(args)?;
+        }
+        let saved = if args.contains_key("token") {
+            json!({})
+        } else {
+            oauth::load()?
+        };
+        let token = optional(args, "token")?
+            .or_else(|| oauth::field(&saved, "accessToken").map(str::to_owned))
+            .ok_or("缺少官方 access_token")?;
+        let mut request = Request::new(method, required(args, "path")?);
+        request.token = Some(&token);
+        request.params = string_pairs(args.get("params"))?;
+        request.form = string_pairs(args.get("form"))?;
+        request.json = args.get("json").cloned();
+        return OpenApiClient::new()?.request(request);
+    }
+    if matches!(name, "comment_reply" | "im_message_send") {
+        confirmed(args)?;
+    }
+    let (token, open_id) =
+        api::resolve_credentials(optional(args, "token")?, optional(args, "open_id")?)?;
+    let path = match name {
+        "userinfo" => "/oauth/userinfo/",
+        "comment_list" => "/item/comment/list/",
+        "comment_replies" => "/item/comment/reply/list/",
+        "comment_reply" => "/item/comment/reply/",
+        "im_message_send" => "/im/send/msg/",
+        _ => return Err("未知 MCP 工具".into()),
+    };
+    let write = matches!(name, "comment_reply" | "im_message_send");
+    let mut request = Request::new(if write { Method::POST } else { Method::GET }, path);
+    request.token = Some(&token);
+    request.params.push(("open_id".into(), open_id));
+    match name {
+        "comment_list" | "comment_replies" => {
+            request.params.extend([
+                ("item_id".into(), required(args, "item_id")?.into()),
+                (
+                    "cursor".into(),
+                    number(args, "cursor", 0, 0, u64::MAX)?.to_string(),
+                ),
+                (
+                    "count".into(),
+                    number(args, "count", 20, 1, 20)?.to_string(),
+                ),
+            ]);
+            if name == "comment_replies" {
+                request
+                    .params
+                    .push(("comment_id".into(), required(args, "comment_id")?.into()));
+            }
+            if args.contains_key("sort_type") {
+                request.params.push((
+                    "sort_type".into(),
+                    number(args, "sort_type", 0, 0, 2)?.to_string(),
+                ));
+            }
+        }
+        "comment_reply" => {
+            let content = required(args, "content")?;
+            api::validate_text(content, 100, false)?;
+            let mut body = json!({"item_id":required(args,"item_id")?,"content":content});
+            if let Some(id) = optional(args, "comment_id")? {
+                body["comment_id"] = json!(id);
+            }
+            request.json = Some(body);
+        }
+        "im_message_send" => {
+            let kind = match optional(args, "message_type")?.as_deref().unwrap_or("text") {
+                "text" => api::MessageType::Text,
+                "image" => api::MessageType::Image,
+                "video" => api::MessageType::Video,
+                _ => return Err("消息类型无效".into()),
+            };
+            let scene = optional(args, "scene")?.unwrap_or_else(|| "im_reply_msg".into());
+            if !matches!(scene.as_str(), "im_reply_msg" | "im_enter_direct_msg") {
+                return Err("私信场景无效".into());
+            }
+            let content = api::message_content(
+                kind,
+                optional(args, "text")?,
+                optional(args, "media_id")?,
+                optional(args, "item_id")?,
+            )?;
+            request.json = Some(
+                json!({"to_user_id":required(args,"to_user_id")?,"scene":scene,"msg_id":required(args,"msg_id")?,"conversation_id":required(args,"conversation_id")?,"content":content}),
+            );
+        }
+        _ => (),
+    }
+    OpenApiClient::new()?.request(request)
 }
 
-fn validate_text(
-    value: &str,
-    key: &str,
-    max_chars: usize,
-    forbid_links: bool,
-) -> Result<(), ToolError> {
-    let length = value.chars().count();
-    if length == 0 || length > max_chars {
-        return Err(ToolError::Execution(format!(
-            "{key} 长度必须为 1..={max_chars} 个字符（当前 {length}）"
-        )));
+fn optional(args: &Map<String, Value>, key: &str) -> Result<Option<String>, String> {
+    match args.get(key) {
+        None => Ok(None),
+        Some(Value::String(s)) if !s.trim().is_empty() => Ok(Some(s.clone())),
+        _ => Err(format!("{key} 必须是非空字符串")),
     }
-    if forbid_links && (value.contains("http://") || value.contains("https://")) {
-        return Err(ToolError::Execution(format!("{key} 不能包含链接")));
-    }
-    Ok(())
 }
-
-fn non_negative_integer(
+fn required<'a>(args: &'a Map<String, Value>, key: &str) -> Result<&'a str, String> {
+    args.get(key)
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| format!("缺少有效 {key}"))
+}
+fn number(
     args: &Map<String, Value>,
     key: &str,
-    default: usize,
-) -> Result<usize, ToolError> {
-    let value = args
-        .get(key)
-        .map(|value| {
-            value
-                .as_u64()
-                .ok_or_else(|| ToolError::Execution(format!("{key} 必须是非负整数")))
-        })
-        .transpose()?
-        .unwrap_or(default as u64);
-    usize::try_from(value).map_err(execution)
-}
-
-fn positive_integer(args: &Map<String, Value>, key: &str, default: u64) -> Result<u64, ToolError> {
-    let value = args
-        .get(key)
-        .map(|value| {
-            value
-                .as_u64()
-                .filter(|value| *value > 0)
-                .ok_or_else(|| ToolError::Execution(format!("{key} 必须是正整数")))
-        })
-        .transpose()?
-        .unwrap_or(default);
+    default: u64,
+    min: u64,
+    max: u64,
+) -> Result<u64, String> {
+    let value = match args.get(key) {
+        None => default,
+        Some(value) => value
+            .as_u64()
+            .ok_or_else(|| format!("{key} 必须是非负整数"))?,
+    };
+    if !(min..=max).contains(&value) {
+        return Err(format!("{key} 超出允许范围"));
+    }
     Ok(value)
 }
-
-fn string_map(
-    args: &Map<String, Value>,
-    key: &str,
-) -> Result<Option<HashMap<String, String>>, ToolError> {
-    let Some(value) = args.get(key) else {
-        return Ok(None);
-    };
-    let object = value
-        .as_object()
-        .ok_or_else(|| ToolError::Execution(format!("{key} 必须是对象")))?;
-    object
-        .iter()
-        .map(|(key, value)| {
-            value
-                .as_str()
-                .map(|value| (key.clone(), value.to_owned()))
-                .ok_or_else(|| ToolError::Execution(format!("{key} 的值必须是字符串")))
-        })
-        .collect::<Result<HashMap<_, _>, _>>()
-        .map(Some)
+fn confirmed(args: &Map<String, Value>) -> Result<(), String> {
+    if args.get("confirmed") == Some(&Value::Bool(true)) {
+        Ok(())
+    } else {
+        Err("写操作需要显式 confirmed=true；未发送请求".into())
+    }
 }
-
-fn execution(error: impl ToString) -> ToolError {
-    ToolError::Execution(error.to_string())
-}
-
-enum ToolError {
-    Unknown(String),
-    Execution(String),
-}
-
-fn error_response(id: Value, code: i64, message: &str) -> Value {
-    json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
-}
-
-fn write_message(writer: &mut impl Write, value: &Value) -> Result<(), String> {
-    serde_json::to_writer(&mut *writer, value).map_err(err)?;
-    writer.write_all(b"\n").map_err(err)?;
-    writer.flush().map_err(err)
+fn string_pairs(value: Option<&Value>) -> Result<Vec<(String, String)>, String> {
+    match value {
+        None => Ok(vec![]),
+        Some(Value::Object(map)) => map
+            .iter()
+            .map(|(k, v)| {
+                v.as_str()
+                    .map(|s| (k.clone(), s.into()))
+                    .ok_or("请求参数值必须是字符串".into())
+            })
+            .collect(),
+        _ => Err("请求参数必须是对象".into()),
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::handle_message;
-    use crate::test_support::present;
-    use serde_json::json;
-
+    use super::*;
     #[test]
-    fn initialize_negotiates_supported_version() {
-        let response = present(handle_message(&json!({
-            "jsonrpc":"2.0", "id":1, "method":"initialize",
-            "params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}
-        })));
-        assert_eq!(response["result"]["protocolVersion"], "2025-11-25");
-        assert_eq!(response["result"]["serverInfo"]["name"], "douyin");
-    }
-
-    #[test]
-    fn tools_list_exposes_openapi_and_offline_insights_tools() {
-        let response = present(handle_message(
-            &json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
-        ));
-        let names: Vec<_> = present(response["result"]["tools"].as_array())
-            .iter()
-            .filter_map(|tool| tool["name"].as_str())
-            .collect();
-        for expected in [
-            "auth_status",
-            "userinfo",
-            "comment_list",
-            "comment_replies",
-            "comment_reply",
-            "im_message_send",
-            "openapi_request",
-            "hot_words",
-            "hot_memes",
-            "demand_discovery",
-        ] {
-            assert!(names.contains(&expected));
+    fn offline_tools_and_write_guards_are_real_not_only_schema_hints() {
+        let args = json!({"texts":["求教程","求教程"],"min_count":2});
+        let result = execute("demand_discovery", args.as_object().unwrap()).unwrap();
+        assert_eq!(result["items"][0]["count"], 2);
+        for name in ["comment_reply", "im_message_send"] {
+            assert!(
+                execute(name, &Map::new())
+                    .unwrap_err()
+                    .contains("confirmed=true")
+            );
         }
-
-        let Some(tools) = response["result"]["tools"].as_array() else {
-            panic!("tools/list result must contain an array");
-        };
-        let Some(direct_message) = tools.iter().find(|tool| tool["name"] == "im_message_send")
-        else {
-            panic!("im_message_send tool must be advertised");
-        };
-        assert_eq!(
-            direct_message["inputSchema"]["required"],
-            json!(["to_user_id", "msg_id", "conversation_id"])
+        let args = json!({"method":"POST","path":"/__douyin_cli_no_network_test__/"});
+        assert!(
+            execute("openapi_request", args.as_object().unwrap())
+                .unwrap_err()
+                .contains("confirmed=true")
         );
-        assert_eq!(
-            direct_message["inputSchema"]["properties"]["message_type"]["enum"],
-            json!(["text", "image", "video"])
+        assert!(tools().unwrap().iter().any(|t| t.name == "native_me"));
+        assert!(
+            tools()
+                .unwrap()
+                .iter()
+                .any(|t| t.name == "native_live_permissions")
         );
-        let Some(comment_list) = tools.iter().find(|tool| tool["name"] == "comment_list") else {
-            panic!("comment_list tool must be advertised");
-        };
-        assert_eq!(
-            comment_list["inputSchema"]["properties"]["count"]["maximum"],
-            20
-        );
-    }
-
-    #[test]
-    fn offline_insights_tool_call_does_not_require_authorization() {
-        let response = present(handle_message(&json!({
-            "jsonrpc":"2.0","id":5,"method":"tools/call","params":{
-                "name":"demand_discovery",
-                "arguments":{"texts":["求链接","求链接"],"top":5,"min_count":2}
-            }
-        })));
-        assert_eq!(
-            response["result"]["structuredContent"]["demands"][0]["text"],
-            "求链接"
-        );
-        assert_eq!(response["result"]["isError"], false);
-    }
-
-    #[test]
-    fn unknown_tool_is_protocol_error() {
-        let response = present(handle_message(&json!({
-            "jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"missing","arguments":{}}
-        })));
-        assert_eq!(response["error"]["code"], -32602);
-    }
-
-    #[test]
-    fn batch_omits_notification_responses() {
-        let response = present(handle_message(&json!([
-            {"jsonrpc":"2.0","method":"notifications/initialized"},
-            {"jsonrpc":"2.0","id":4,"method":"ping"}
-        ])));
-        assert_eq!(present(response.as_array()).len(), 1);
-        assert_eq!(response[0]["id"], 4);
-    }
-
-    #[test]
-    fn invalid_requests_return_json_rpc_errors() {
-        let empty_batch = present(handle_message(&json!([])));
-        assert_eq!(empty_batch["error"]["code"], -32600);
-        assert!(empty_batch["id"].is_null());
-
-        let batch = present(handle_message(&json!([
-            1,
-            [],
-            {"jsonrpc":"2.0","id":7,"method":"ping"}
-        ])));
-        assert_eq!(batch[0]["error"]["code"], -32600);
-        assert!(batch[0]["id"].is_null());
-        assert_eq!(batch[1]["error"]["code"], -32600);
-        assert!(batch[1]["id"].is_null());
-        assert_eq!(batch[2]["id"], 7);
-
-        let missing_method = present(handle_message(&json!({"jsonrpc":"2.0"})));
-        assert_eq!(missing_method["error"]["code"], -32600);
-        assert!(missing_method["id"].is_null());
     }
 }

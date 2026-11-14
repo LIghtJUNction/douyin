@@ -2,8 +2,8 @@
 name = "douyin-cli"
 version = "2026.8.23"
 edition = "2024"
-rust-version = "1.88"
-description = "A Rust CLI for Douyin OpenAPI and web workflows"
+rust-version = "1.100"
+description = "A Rust CLI reproducing Douyin Android workflows and livestreaming"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/LIghtJUNction/douyin"
 exclude = [
@@ -19,14 +19,24 @@ name = "douyin"
 path = "src/main.rs"
 
 [dependencies]
-clap = { version = "4.6.2", features = ["derive", "env"] }
-base64 = "0.22.1"
+clap = { version = "4.6.7", features = ["derive", "env"] }
+base64 = "0.23.1"
 percent-encoding = "2.3.2"
 qrcode = { version = "0.14.1", default-features = false }
-reqwest = { version = "0.12.28", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "json", "rustls", "query", "form", "multipart"] }
 ring = "0.17.14"
-serde_json = "1.0.150"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
 url = "2.5.8"
+quick-xml = "0.42.0"
+rusqlite = { version = "0.42.0", default-features = false, features = ["libsqlite3-sys", "bundled"] }
+tempfile = "3.27.0"
+tiny_http = "0.12.0"
+rmcp = { version = "3.10.0", default-features = false, features = ["server", "transport-io"] }
+tokio = { version = "1.54.1", features = ["rt", "io-std", "time"] }
+frida = { version = "0.17.2", features = ["auto-download"] }
+lzma-rust2 = { version = "0.25.0", default-features = false, features = ["std", "xz"] }
+obws = "0.15.0"
 
 [profile.release]
 lto = "thin"

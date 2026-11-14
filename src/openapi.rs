@@ -1,378 +1,253 @@
-use std::collections::HashMap;
+//! Official OpenAPI transport, deliberately separate from the native session.
+use std::collections::BTreeMap;
+use std::io::Read;
 use std::time::Duration;
 
-use reqwest::Url;
-use reqwest::blocking::{Client, RequestBuilder};
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
-use serde_json::{Value, json};
-
-use crate::err;
-
-pub const BASE_URL: &str = "https://open.douyin.com";
+use reqwest::{
+    Method,
+    blocking::Client,
+    header::{HeaderName, HeaderValue},
+    redirect::Policy,
+};
+use serde_json::Value;
+use url::Url;
 
 pub struct OpenApiClient {
-    base_url: Url,
+    base: Url,
     client: Client,
+}
+
+pub struct Request<'a> {
+    pub method: Method,
+    pub path: &'a str,
+    pub token: Option<&'a str>,
+    pub params: Vec<(String, String)>,
+    pub form: Vec<(String, String)>,
+    pub json: Option<Value>,
+    pub headers: BTreeMap<String, String>,
+}
+
+impl<'a> Request<'a> {
+    pub fn new(method: Method, path: &'a str) -> Self {
+        Self {
+            method,
+            path,
+            token: None,
+            params: vec![],
+            form: vec![],
+            json: None,
+            headers: BTreeMap::new(),
+        }
+    }
 }
 
 impl OpenApiClient {
     pub fn new() -> Result<Self, String> {
-        Self::with_base_url(BASE_URL)
+        let base = Url::parse("https://open.douyin.com/").map_err(|_| "OpenAPI 地址无效")?;
+        Self::with_base(base)
     }
-
-    pub fn with_base_url(base_url: &str) -> Result<Self, String> {
-        let mut base_url =
-            Url::parse(base_url).map_err(|error| format!("OpenAPI base URL 无效: {error}"))?;
-        if !matches!(base_url.scheme(), "http" | "https") || base_url.host_str().is_none() {
-            return Err("OpenAPI base URL 必须是有效的 HTTP(S) 地址".to_owned());
-        }
-        base_url.set_path("/");
-        base_url.set_query(None);
-        base_url.set_fragment(None);
+    fn with_base(base: Url) -> Result<Self, String> {
         let client = Client::builder()
+            .redirect(Policy::none())
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(30))
             .build()
-            .map_err(err)?;
-        Ok(Self { base_url, client })
+            .map_err(|_| "无法创建 OpenAPI 客户端")?;
+        Ok(Self { base, client })
     }
-
-    pub fn authorize_url(
-        &self,
-        client_key: &str,
-        redirect_uri: &str,
-        scopes: &[String],
-        state: Option<&str>,
-    ) -> Result<String, String> {
-        let mut url = self.url("/platform/oauth/connect/")?;
+    fn url(&self, path: &str) -> Result<Url, String> {
+        if !path.starts_with('/') || path.starts_with("//") || path.contains(['?', '#', '\\']) {
+            return Err("OpenAPI 只接受同源绝对路径，查询参数请使用 --param".into());
+        }
+        let url = self.base.join(path).map_err(|_| "OpenAPI 路径无效")?;
+        if url.origin() != self.base.origin()
+            || !url.username().is_empty()
+            || url.password().is_some()
         {
-            let mut query = url.query_pairs_mut();
-            query.append_pair("client_key", client_key);
-            query.append_pair("response_type", "code");
-            query.append_pair("scope", &scopes.join(","));
-            query.append_pair("redirect_uri", redirect_uri);
-            if let Some(state) = state {
-                query.append_pair("state", state);
-            }
+            return Err("拒绝跨域 OpenAPI 请求".into());
         }
-        Ok(url.into())
+        Ok(url)
     }
-
-    pub fn client_token(&self, client_key: &str, client_secret: &str) -> Result<Value, String> {
-        self.request(RequestSpec {
-            method: "POST",
-            path: "/oauth/client_token/",
-            form: Some(HashMap::from([
-                ("client_key".to_owned(), client_key.to_owned()),
-                ("client_secret".to_owned(), client_secret.to_owned()),
-                ("grant_type".to_owned(), "client_credential".to_owned()),
-            ])),
-            auth_required: false,
-            ..RequestSpec::default()
-        })
-    }
-
-    pub fn access_token(
-        &self,
-        client_key: &str,
-        client_secret: &str,
-        code: &str,
-    ) -> Result<Value, String> {
-        self.request(RequestSpec {
-            method: "POST",
-            path: "/oauth/access_token/",
-            form: Some(HashMap::from([
-                ("client_key".to_owned(), client_key.to_owned()),
-                ("client_secret".to_owned(), client_secret.to_owned()),
-                ("code".to_owned(), code.to_owned()),
-                ("grant_type".to_owned(), "authorization_code".to_owned()),
-            ])),
-            auth_required: false,
-            ..RequestSpec::default()
-        })
-    }
-
-    pub fn refresh_token(&self, client_key: &str, refresh_token: &str) -> Result<Value, String> {
-        self.request(RequestSpec {
-            method: "POST",
-            path: "/oauth/refresh_token/",
-            form: Some(HashMap::from([
-                ("client_key".to_owned(), client_key.to_owned()),
-                ("grant_type".to_owned(), "refresh_token".to_owned()),
-                ("refresh_token".to_owned(), refresh_token.to_owned()),
-            ])),
-            auth_required: false,
-            ..RequestSpec::default()
-        })
-    }
-
-    pub fn renew_refresh_token(
-        &self,
-        client_key: &str,
-        refresh_token: &str,
-    ) -> Result<Value, String> {
-        self.request(RequestSpec {
-            method: "POST",
-            path: "/oauth/renew_refresh_token/",
-            form: Some(HashMap::from([
-                ("client_key".to_owned(), client_key.to_owned()),
-                ("refresh_token".to_owned(), refresh_token.to_owned()),
-            ])),
-            auth_required: false,
-            ..RequestSpec::default()
-        })
-    }
-
-    pub fn request(&self, spec: RequestSpec<'_>) -> Result<Value, String> {
-        if spec.auth_required && spec.token.is_none_or(str::is_empty) {
-            return Err("调用 OpenAPI 需要 access-token 或 client-token".to_owned());
-        }
-        let method = spec
-            .method
-            .parse::<reqwest::Method>()
-            .map_err(|error| format!("HTTP method 无效: {error}"))?;
+    pub fn request(&self, spec: Request<'_>) -> Result<Value, String> {
         let url = self.url(spec.path)?;
-        let mut request = self.client.request(method, url);
-        if let Some(token) = spec.token {
+        if spec.json.is_some() && !spec.form.is_empty() {
+            return Err("JSON 和表单不能同时发送".into());
+        }
+        let mut request = self.client.request(spec.method, url).query(&spec.params);
+        if let Some(token) = spec.token.filter(|v| !v.is_empty()) {
             request = request.header("access-token", token);
         }
-        request = add_headers(request, spec.headers)?;
-        if let Some(params) = spec.params {
-            request = request.query(&params);
+        for (name, value) in spec.headers {
+            let name =
+                HeaderName::from_bytes(name.as_bytes()).map_err(|_| "OpenAPI 请求头名称无效")?;
+            if matches!(
+                name.as_str(),
+                "host"
+                    | "cookie"
+                    | "authorization"
+                    | "proxy-authorization"
+                    | "access-token"
+                    | "content-length"
+                    | "transfer-encoding"
+                    | "connection"
+            ) {
+                return Err("自定义请求头不能覆盖认证、主机或传输控制字段".into());
+            }
+            let value = HeaderValue::from_str(&value).map_err(|_| "OpenAPI 请求头值无效")?;
+            request = request.header(name, value);
         }
-        if let Some(form) = spec.form {
-            request = request.form(&form);
-        } else if let Some(body) = spec.json_body {
+        if let Some(body) = spec.json {
             request = request.json(&body);
+        } else if !spec.form.is_empty() {
+            request = request.form(&spec.form);
         }
-
-        let response = request.send().map_err(err)?;
-        let status = response.status();
-        let text = response.text().map_err(err)?;
-        if !status.is_success() {
-            return Err(format!(
-                "OpenAPI HTTP 请求失败: {status} {}",
-                body_excerpt(&text)
-            ));
+        let response = request.send().map_err(|_| "OpenAPI 请求失败或超时")?;
+        if !response.status().is_success() {
+            return Err(format!("OpenAPI 返回 HTTP {}", response.status().as_u16()));
         }
-        let data: Value = serde_json::from_str(&text)
-            .map_err(|_| format!("OpenAPI 响应不是 JSON: {}", body_excerpt(&text)))?;
-        if !data.is_object() {
-            return Err("OpenAPI 响应不是 JSON object".to_owned());
+        let mut bytes = Vec::new();
+        response
+            .take(16 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "读取 OpenAPI 响应失败")?;
+        if bytes.len() > 16 * 1024 * 1024 {
+            return Err("OpenAPI 响应超过大小限制".into());
         }
-        if let Some(error) = api_error(&data) {
-            return Err(error);
-        }
-        Ok(data)
+        let value: Value =
+            serde_json::from_slice(&bytes).map_err(|_| "OpenAPI 返回非 JSON 内容")?;
+        validate_response(&value)?;
+        Ok(value)
     }
-
-    fn url(&self, path: &str) -> Result<Url, String> {
-        let resolved = self
-            .base_url
-            .join(path)
-            .map_err(|error| format!("OpenAPI path 无效: {error}"))?;
-        if !same_origin(&self.base_url, &resolved) {
-            return Err(format!(
-                "拒绝跨域 OpenAPI 请求: {}",
-                resolved.origin().ascii_serialization()
-            ));
+    pub fn authorize_url(
+        &self,
+        key: &str,
+        redirect: &str,
+        scopes: &[String],
+        state: &str,
+    ) -> Result<String, String> {
+        if key.trim().is_empty()
+            || scopes.is_empty()
+            || scopes
+                .iter()
+                .any(|s| s.trim().is_empty() || s.contains(','))
+        {
+            return Err("OAuth 需要 client-key 和有效 scope 列表".into());
         }
-        Ok(resolved)
-    }
-}
-
-fn same_origin(left: &Url, right: &Url) -> bool {
-    left.scheme() == right.scheme()
-        && left.host_str() == right.host_str()
-        && left.port_or_known_default() == right.port_or_known_default()
-}
-
-fn body_excerpt(body: &str) -> String {
-    const MAX_CHARS: usize = 2_000;
-    let mut characters = body.chars();
-    let excerpt: String = characters.by_ref().take(MAX_CHARS).collect();
-    if characters.next().is_some() {
-        format!("{excerpt}…（响应已截断）")
-    } else {
-        excerpt
-    }
-}
-
-#[derive(Default)]
-pub struct RequestSpec<'a> {
-    pub method: &'a str,
-    pub path: &'a str,
-    pub token: Option<&'a str>,
-    pub params: Option<HashMap<String, String>>,
-    pub json_body: Option<Value>,
-    pub form: Option<HashMap<String, String>>,
-    pub headers: Option<HashMap<String, String>>,
-    pub auth_required: bool,
-}
-
-pub fn im_message_body(
-    to_user_id: &str,
-    scene: &str,
-    msg_id: &str,
-    conversation_id: &str,
-    content: Value,
-) -> Value {
-    json!({
-        "to_user_id": to_user_id,
-        "scene": scene,
-        "msg_id": msg_id,
-        "conversation_id": conversation_id,
-        "content": content,
-    })
-}
-
-fn api_error(response: &Value) -> Option<String> {
-    let candidates = [
-        (response.get("err_no"), response),
-        (response.get("error_code"), response),
-        (response.get("status_code"), response),
-        (
-            response.pointer("/data/error_code"),
-            response.get("data").unwrap_or(response),
-        ),
-        (
-            response.pointer("/extra/error_code"),
-            response.get("extra").unwrap_or(response),
-        ),
-    ];
-    let (code, details) = candidates
-        .into_iter()
-        .find_map(|(code, details)| nonzero_code(code?).map(|code| (code, details)))?;
-    let message = [
-        "err_msg",
-        "description",
-        "error_msg",
-        "message",
-        "sub_description",
-    ]
-    .into_iter()
-    .find_map(|key| details.get(key).and_then(Value::as_str))
-    .filter(|message| !message.trim().is_empty())
-    .unwrap_or("未提供错误说明");
-    Some(format!("OpenAPI 返回业务错误 {code}: {message}"))
-}
-
-fn nonzero_code(value: &Value) -> Option<String> {
-    match value {
-        Value::Number(number) if number.as_i64().is_some_and(|code| code != 0) => {
-            Some(number.to_string())
+        let callback = Url::parse(redirect).map_err(|_| "OAuth 回调地址无效")?;
+        if !matches!(callback.scheme(), "https" | "http")
+            || !callback.username().is_empty()
+            || callback.password().is_some()
+            || callback.fragment().is_some()
+        {
+            return Err("OAuth 回调必须是无用户信息和 fragment 的 HTTP(S) URL".into());
         }
-        Value::String(code) if !code.is_empty() && code != "0" => Some(code.clone()),
-        _ => None,
+        let mut url = self.url("/platform/oauth/connect/")?;
+        url.query_pairs_mut().extend_pairs([
+            ("client_key", key),
+            ("response_type", "code"),
+            ("scope", &scopes.join(",")),
+            ("redirect_uri", redirect),
+            ("state", state),
+        ]);
+        Ok(url.into())
+    }
+    pub fn token(&self, path: &str, fields: &[(&str, &str)]) -> Result<Value, String> {
+        let mut request = Request::new(Method::POST, path);
+        request.form = fields
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        self.request(request)
     }
 }
 
-fn add_headers(
-    mut request: RequestBuilder,
-    headers: Option<HashMap<String, String>>,
-) -> Result<RequestBuilder, String> {
-    let Some(headers) = headers else {
-        return Ok(request);
-    };
-    let mut values = HeaderMap::new();
-    for (key, value) in headers {
-        let key = HeaderName::try_from(key).map_err(err)?;
-        let value = HeaderValue::try_from(value).map_err(err)?;
-        values.insert(key, value);
+fn validate_response(value: &Value) -> Result<(), String> {
+    if !value.is_object() {
+        return Err("OpenAPI 响应不是对象".into());
     }
-    request = request.headers(values);
-    Ok(request)
+    let mut found = false;
+    for container in [value, &value["data"], &value["extra"]] {
+        for key in ["err_no", "error_code", "status_code"] {
+            if let Some(code) = container.get(key) {
+                let code = crate::net::integer(code).ok_or("OpenAPI 错误码格式无效")?;
+                found = true;
+                if code != 0 {
+                    return Err(format!("OpenAPI 报告错误码 {code}"));
+                }
+            }
+        }
+    }
+    if !found && value["message"] != "success" {
+        return Err("OpenAPI 未返回可识别的业务状态".into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{OpenApiClient, RequestSpec, api_error, body_excerpt, im_message_body};
-    use crate::test_support::must;
+    use super::*;
     use serde_json::json;
-
+    use std::io::Write;
+    use std::net::TcpListener;
     #[test]
-    fn authorize_url_encodes_values() {
-        let client = must(OpenApiClient::new());
-        let url = must(client.authorize_url(
-            "client",
-            "https://example.com/callback",
-            &["user_info".to_owned(), "item.comment".to_owned()],
-            Some("state value"),
-        ));
-        assert!(url.starts_with("https://open.douyin.com/platform/oauth/connect/?"));
-        assert!(url.contains("scope=user_info%2Citem.comment"));
-        assert!(url.contains("redirect_uri=https%3A%2F%2Fexample.com%2Fcallback"));
-        assert!(url.contains("state=state+value"));
+    fn error_bodies_never_escape_into_errors() {
+        assert!(validate_response(&json!({"data":{"error_code":"0"}})).is_ok());
+        let error =
+            validate_response(&json!({"data":{"error_code":10008,"description":"secret-token"}}))
+                .unwrap_err();
+        assert!(error.contains("10008"));
+        assert!(!error.contains("secret"));
+        assert!(validate_response(&json!({"data":{"error_code":"bad"}})).is_err());
+        assert!(validate_response(&json!({"result":true})).is_err());
     }
-
     #[test]
-    fn request_rejects_missing_token_before_network() {
-        let client = must(OpenApiClient::new());
-        let error = client
-            .request(RequestSpec {
-                method: "GET",
-                path: "/oauth/userinfo/",
-                auth_required: true,
-                ..RequestSpec::default()
-            })
-            .unwrap_err();
-        assert!(error.contains("access-token"));
+    fn token_is_only_a_header_and_redirects_are_not_followed() {
+        let server = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = Url::parse(&format!("http://{}/", server.local_addr().unwrap())).unwrap();
+        let thread = std::thread::spawn(move || {
+            let (mut stream, _) = server.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0];
+            while !request.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+            }
+            let text = String::from_utf8(request).unwrap();
+            assert!(text.to_lowercase().contains("access-token: fixture-token"));
+            assert!(!text.lines().next().unwrap().contains("fixture-token"));
+            stream.write_all(b"HTTP/1.1 302 Found\r\nLocation: https://evil.invalid/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        });
+        let client = OpenApiClient::with_base(base).unwrap();
+        let mut spec = Request::new(Method::GET, "/oauth/userinfo/");
+        spec.token = Some("fixture-token");
+        assert!(client.request(spec).unwrap_err().contains("302"));
+        thread.join().unwrap();
     }
-
     #[test]
-    fn request_rejects_cross_origin_url_before_network() {
-        let client = must(OpenApiClient::new());
-        let error = client
-            .request(RequestSpec {
-                method: "GET",
-                path: "https://example.com/collect",
-                token: Some("secret-token"),
-                auth_required: true,
-                ..RequestSpec::default()
-            })
-            .unwrap_err();
-        assert!(error.contains("拒绝跨域"));
-        assert!(!error.contains("secret-token"));
-    }
-
-    #[test]
-    fn validates_base_url_and_bounds_error_bodies() {
-        assert!(OpenApiClient::with_base_url("file:///tmp/api").is_err());
-        assert_eq!(body_excerpt("short"), "short");
-        let excerpt = body_excerpt(&"界".repeat(2_001));
-        assert!(excerpt.ends_with("…（响应已截断）"));
-        assert_eq!(excerpt.chars().count(), 2_008);
-    }
-
-    #[test]
-    fn im_body_uses_the_current_direct_message_shape() {
-        let body = im_message_body(
-            "user",
-            "im_reply_msg",
-            "message-id",
-            "conversation-id",
-            json!({"msg_type": 1, "text": {"text": "你好"}}),
-        );
-        assert_eq!(body["scene"], "im_reply_msg");
-        assert_eq!(body["msg_id"], "message-id");
-        assert_eq!(body["conversation_id"], "conversation-id");
-        assert_eq!(body["content"]["msg_type"], 1);
-        assert_eq!(body["content"]["text"]["text"], "你好");
-    }
-
-    #[test]
-    fn detects_current_and_legacy_business_errors() {
-        assert_eq!(
-            api_error(&json!({"err_no": 2100005, "err_msg": "参数不合法"})).as_deref(),
-            Some("OpenAPI 返回业务错误 2100005: 参数不合法")
-        );
-        assert_eq!(
-            api_error(
-                &json!({"data": {"error_code": "10008", "description": "access_token 无效"}})
+    fn same_origin_paths_and_authorization_encoding_are_enforced() {
+        let client = OpenApiClient::new().unwrap();
+        for path in [
+            "https://evil.invalid/x",
+            "//evil.invalid/x",
+            "/x?token=secret",
+            "/\\evil.invalid/x",
+        ] {
+            assert!(client.url(path).is_err());
+        }
+        let url = client
+            .authorize_url(
+                "key",
+                "http://127.0.0.1:8787/callback",
+                &["user_info".into()],
+                "random-state",
             )
-            .as_deref(),
-            Some("OpenAPI 返回业务错误 10008: access_token 无效")
-        );
-        assert!(api_error(&json!({"err_no": 0, "data": {"error_code": 0}})).is_none());
+            .unwrap();
+        let parsed = Url::parse(&url).unwrap();
+        let params: BTreeMap<_, _> = parsed.query_pairs().collect();
+        assert_eq!(params["state"], "random-state");
+        assert_eq!(params["redirect_uri"], "http://127.0.0.1:8787/callback");
     }
 }

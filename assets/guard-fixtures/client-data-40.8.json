@@ -1,0 +1,8 @@
+{
+  "req_content": "ticket,path,timestamp",
+  "timestamp": 1700000000,
+  "ts_sign": "",
+  "ts_sign_ree": "fixture-proof",
+  "req_sign": "",
+  "req_sign_ree": "AQID"
+}

@@ -1,54 +1,22 @@
-<div align="center">
-  <h1>douyin-cli</h1>
-  <p><strong>把抖音网页工作流、官方 OpenAPI 和离线内容分析放进一个 Rust CLI。</strong></p>
-  <p>采集与下载 · 评论 · OAuth · 私信 · 统计 · stdio MCP</p>
+# douyin-cli
 
-  [![Crates.io](https://img.shields.io/crates/v/douyin-cli?style=flat-square&logo=rust)](https://crates.io/crates/douyin-cli)
-  [![AUR](https://img.shields.io/badge/AUR-douyin--cli-111111?style=flat-square&logo=archlinux)](https://aur.archlinux.org/packages/douyin-cli)
-  [![Rust](https://img.shields.io/badge/Rust-1.88%2B-111111?style=flat-square&logo=rust)](Cargo.toml)
-  [![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-111111?style=flat-square)](LICENSE)
+用命令行操作抖音，Rust 写的。
 
-  [安装](#安装) · [认证模型](#先理解认证模型) · [快速使用](#快速使用) · [MCP](#mcp-服务器) · [完整手册](USAGE.md)
-</div>
+这个项目正在重写。我要的是模拟安卓端：手机上能干什么，命令行也能干什么。手机已经登录了，连上 ADB，执行 `auth --adb` 导入，之后断开手机也能用。登录态和设备标识一起处理，不能随便拼一套参数冒充手机。
 
-## 三条能力线
+直播也要支持，用导入的手机身份开播。OBS 两个方向都要有：OBS 往抖音推流，抖音直播画面送进 OBS。这里说的是开发目标，还没全部做完。全部做完、实机验证通过，再发一个大版本。
 
-```text
-浏览器 Cookie ─→ 搜索 / 主页 / 单作品 / 网页评论 / 下载
+**重写还没完成，尚未发布新版。当前源码已经跑通这些：**
 
-官方 OAuth ───→ 用户信息 / 官方评论 / 评论回复 / 私信 / MCP
+- `auth --adb` 导入原生 Token，核对账号、设备 ID、安装 ID 和应用版本；导入过程中标识变化就拒绝保存。
+- 导入后断开手机、不带 WebView Cookie，账号验证、个人资料、关注列表和直播配置查询都已实测通过；直播配置查询也跑过实际 MCP 调用。
+- 本地 85 项 Rust 测试、Clippy、release 构建和打包校验通过。OBS 目前只验过本地联动，真实推流和直播画面还没验收。
 
-本地文件 ─────→ 热词 / 热梗 / 需求线索 / 作品元数据统计
-```
+搜索、完整签名、手机身份开播，以及手机端其余功能还在做。下面写的是当前源码的用法，不能把它当成已发布版本的功能清单。
 
-三条线可以独立使用。离线分析不访问网络；网页 Cookie 不能替代 OpenAPI token，OAuth token 也不能替代网页 Cookie。
+## 先跑起来
 
-## 安装
-
-需要 Rust 1.88 或更高版本。网页采集与评论功能还需要系统中存在 `node`；官方 OpenAPI 与离线统计不依赖 Node.js。
-
-### Arch Linux
-
-```bash
-paru -S douyin-cli
-# 或：yay -S douyin-cli
-```
-
-### crates.io
-
-```bash
-cargo install douyin-cli --locked
-douyin --version
-douyin --help
-```
-
-更新：
-
-```bash
-cargo install douyin-cli --locked --force
-```
-
-### 源码
+需要 Rust 1.100+、ADB，以及一台已经登录抖音的 Android 手机。目前导入登录态需要手机 root。源码构建还需要 C 编译器和 libclang，首次构建会下载 Frida SDK 开发包。
 
 ```bash
 git clone https://github.com/LIghtJUNction/douyin.git
@@ -56,239 +24,213 @@ cd douyin
 cargo install --path . --locked
 ```
 
-## 先理解认证模型
-
-| 能力 | 凭据 | 是否需要开放平台应用 |
-| --- | --- | --- |
-| 网页搜索、主页作品、单作品、收藏、网页评论 | 浏览器 Cookie | 否 |
-| 官方用户信息、评论接口、私信、授权型 MCP 工具 | OAuth access token | 是 |
-| 本地洞察和统计 | 无 | 否 |
-
-### 浏览器 Cookie
-
-在浏览器登录抖音网页端，从开发者工具的请求头复制完整 Cookie 值，不要包含 `Cookie:` 前缀：
+看看设备有没有连上：
 
 ```bash
-douyin auth cookie-login --cookie "sessionid=...; ttwid=..."
-douyin auth cookie-status --offline
-douyin auth cookie-status
+adb devices
+douyin device
 ```
 
-`--offline` 只验证本地格式；联网状态检查会请求登录态接口。若平台要求验证码、触发风控或接口发生变化，工具会报告“无法确认”，不会把匿名接口成功误判成已登录。
-
-也可只在当前 shell 注入：
+## 从手机登录
 
 ```bash
-export DOUYIN_COOKIE="完整 Cookie 字符串"
-douyin auth cookie-login
-unset DOUYIN_COOKIE
+douyin auth --adb
 ```
 
-清除本地 Cookie：
+读取手机里的抖音登录态，同时核对应用的设备 ID、安装 ID 和版本信息。API、APK 和更新版本码分别从已安装应用读取。服务端确认账号后才保存。
+
+抖音 40.8.0 优先导入原生 Token，不依赖 WebView Cookie 确认账号。导入后，`auth status` 和基础请求可以脱离手机运行。其他版本保留已有的 Cookie 登录方式。
+
+连了多台手机就指定一台：
 
 ```bash
-douyin auth cookie-logout
+douyin auth --adb --serial 你的设备序列号
 ```
 
-> [!CAUTION]
-> Cookie、`client_secret` 和 token 都是凭据。不要发到聊天记录、命令日志、Issue 或 Git 仓库；不要采集、下载或处理你无权访问的数据。
-
-### 官方 OAuth
-
-在抖音开放平台创建应用，配置允许的回调地址和 scope。推荐本机监听：
+检查登录状态：
 
 ```bash
-export DOUYIN_CLIENT_KEY="你的 client_key"
-export DOUYIN_CLIENT_SECRET="你的 client_secret"
-
-douyin auth login \
-  --scope user_info \
-  --scope item.comment \
-  --listen \
-  --callback-port 8787
+douyin auth status
 ```
 
-开放平台应用需允许 `http://127.0.0.1:8787/callback`。无法本地监听时，先生成授权链接，再手动交换回调 code：
+只检查本地配置，不联网：
 
 ```bash
-douyin auth login \
-  --redirect-uri "https://example.com/callback" \
-  --scope user_info \
-  --scope item.comment
-
-douyin auth code --code "回调中的授权码"
+douyin auth status --offline
 ```
 
+`--offline` 不代表服务端确认了登录。手机上切换了账号，就重新执行 `douyin auth --adb`。
+
+删除电脑上保存的登录态：
+
 ```bash
-douyin auth status --json
-douyin auth refresh
 douyin auth logout
 ```
 
-评论接口使用 `item.comment`；私信使用 `im.direct_message`；图片发送还需 `tool.image.upload`。实际可用接口取决于应用审核、授权 scope 与平台规则。
+这个命令不会把手机上的抖音退出登录。
 
-## 快速使用
-
-### 搜索与下载
-
-只采集元数据：
+## 读取资料和关注列表
 
 ```bash
-douyin -u "搜索关键词" -t search -l 5 --no-download
+douyin me
+douyin -t following -l 20 --no-download -p ./downloads
 ```
 
-下载单作品或主页作品：
+这两个流程已验证导入后不带 Cookie、禁用 ADB 也能直接请求。采集入口沿用 `-u`、`-t`、`-l`，但其他类型还在验证，帮助里列出了命令不代表每个接口都已经跑通。
+
+默认直接使用电脑上保存的会话请求，不会因为手机连接着就自动调用手机。独立签名还没补全，部分接口仍会触发风控；默认独立请求不代表全功能独立运行已经完成。
+
+保留了一个 `phone` 协议调试通道，通过应用自己的网络客户端验证请求。它需要手机连接，会打开抖音并核对账号和设备。首次使用会下载并校验支持文件，电脑端不需要 Python 或 Node。
 
 ```bash
-douyin -u "https://www.douyin.com/video/作品ID" -t aweme
-douyin -u "https://www.douyin.com/user/用户ID" -t post -l 20
+DOUYIN_NATIVE_TRANSPORT=phone douyin -u "关键词" -t search -l 3 --no-download
+DOUYIN_NATIVE_TRANSPORT=direct douyin me
 ```
 
-批量目标：
+手机通道原型读取过作品、评论和搜索结果。Rust CLI 的 `me` 在实机跑通过，但后续附加和搜索仍不稳定。它只用于协议研究，不能算完整独立运行已经完成。
+
+作品采集会合并已有归档：新采到的作品更新数据，历史作品保留。文件按目标账号区分；`-l` 限制的是本次采集数量，合并后的归档可能更多。分页信息也只描述本次采集。
+
+## 评论和回复
 
 ```bash
-douyin -u targets.txt -p ./downloads \
-  --download-title \
-  --download-cover
+douyin comment "作品 ID 或分享链接" --limit 100 --with-replies --format raw -o comments.json
+douyin comment "作品 ID 或分享链接" --with-replies --format chatml-jsonl -o comments.jsonl
 ```
 
-`-t` 支持 `post`、`favorite`、`music`、`hashtag`、`search`、`following`、`follower`、`collection`、`mix` 和 `aweme`。`collection` 读取当前 Cookie 账号收藏，不传 `-u`。
+主评论和楼中楼分别分页，回复数量用 `--reply-limit` 控制。ChatML 导出可以筛选点赞数，也能保留没有回复的评论。这部分代码和导出测试已完成，完整联网采集还在验收。
 
-### 评论
+## 官方授权和 MCP
 
-```bash
-douyin comment "https://www.douyin.com/video/作品ID" --limit 100
-
-douyin comment "https://www.douyin.com/video/作品ID" \
-  --with-replies \
-  --reply-limit 50 \
-  --format chatml-jsonl \
-  --output comments.jsonl
-```
-
-输出支持 `raw`、`chatml-jsonl` 与 `chatml-json`。
-
-### 离线热词与需求线索
+开放平台应用配置通过 `DOUYIN_CLIENT_KEY`、`DOUYIN_CLIENT_SECRET` 提供。回调地址需要先在开放平台配置好。
 
 ```bash
-douyin insights comments.json --top 20 --min-count 2
-cat comments.jsonl | douyin insights - --format markdown -o insights.md
-```
-
-分析过程是确定性的：停用词过滤、重复频次、互动权重和意图关键词匹配。它不会调用模型，也不代表工具真正理解语义。输出中的“需求”是可解释线索，不是市场结论。
-
-### 离线作品统计
-
-```bash
-douyin stats search_陈震同学.json \
-  --author 陈震同学 \
-  --sort score \
-  --top 10
-```
-
-综合分只在当前输入集合内比较。它对点赞、评论、收藏、分享分别做 `ln(1+x)` 归一化，再按 35%、20%、20%、25% 加权。由于采集元数据不含播放量，这不是互动率。
-
-### 官方 OpenAPI
-
-```bash
+douyin auth login --scope user_info --listen --callback-port 8787
+douyin auth status --oauth
+douyin auth refresh
 douyin api userinfo
-douyin api comment-list --item-id "$DOUYIN_ITEM_ID"
-douyin api comment-replies \
-  --item-id "$DOUYIN_ITEM_ID" \
-  --comment-id "$DOUYIN_COMMENT_ID"
-```
-
-写操作默认要求确认：
-
-```bash
-douyin api comment-reply \
-  --item-id "$DOUYIN_ITEM_ID" \
-  --comment-id "$DOUYIN_COMMENT_ID" \
-  --content "谢谢反馈"
-```
-
-私信回复：
-
-```bash
-douyin api im-message-send \
-  --to-user-id "$DOUYIN_TO_USER_ID" \
-  --msg-id "$DOUYIN_MSG_ID" \
-  --conversation-id "$DOUYIN_CONVERSATION_ID" \
-  --text "你好，已收到" \
-  --yes
-```
-
-通用请求只接受当前 OpenAPI 基地址的同源路径，避免把 token 发往任意主机：
-
-```bash
-douyin api request GET /oauth/userinfo/ \
-  --param open_id="$DOUYIN_OPEN_ID"
-```
-
-## MCP 服务器
-
-`douyin mcp` 通过 stdio 暴露官方 OpenAPI 工具，并复用已保存的 OAuth。`hot_words`、`hot_memes` 和 `demand_discovery` 是纯离线工具，不需要授权。
-
-```bash
 douyin mcp
 ```
 
-```json
-{
-  "mcpServers": {
-    "douyin": {
-      "command": "douyin",
-      "args": ["mcp"]
-    }
-  }
-}
-```
+OpenAPI 使用应用授权，ADB 导入使用手机登录态。评论回复、私信发送等写操作需要 `--yes`；MCP 调用需要 `confirmed=true`。
+
+OAuth、OpenAPI 已重写并通过本地验证。MCP 接入了 [官方 Rust SDK](https://github.com/modelcontextprotocol/rust-sdk)，新旧协议都跑过真实 stdio 进程测试。开放平台的实际授权、权限和业务接口还要继续验证。
+
+## 网页 Cookie
 
 ```bash
-claude mcp add douyin -- douyin mcp
-codex mcp add douyin -- douyin mcp
+douyin auth cookie-login --cookie-file ./private-cookie.txt
+douyin auth cookie-status --offline
+douyin auth cookie-status
+douyin auth cookie-logout
 ```
 
-MCP 只是把已有命令变成结构化工具调用，不会绕过 OAuth、scope、确认或平台权限。
+也支持 `--cookie` 和 `DOUYIN_COOKIE`。保存时只检查格式，`--offline` 也只检查格式；联网检查成功才确认网页登录态。Cookie 管理已经补回，网页采集后端还在接。
 
-## 配置
+## 直播配置和 OBS 联动
 
-| 平台 | 默认路径 |
-| --- | --- |
-| Linux / macOS | `~/.config/douyin-cli/config/settings.json` |
-| Windows | `%APPDATA%\douyin-cli\config\settings.json` |
-| 测试隔离 | 通过 `DOUYIN_HOME` 指定 |
+`douyin live permissions` 查询当前账号的直播配置。CLI 和 MCP 都已实测导入后独立运行，不需要手机连接或 WebView Cookie；会先核对当前账号，只输出认证类型、回放/录制/商城等设置开关、预约直播设置和配置栏目。这个命令不创建直播间，也不把接口返回的配置当作开播成功。MCP 对应工具是 `native_live_permissions`。
 
-常用环境变量：`DOUYIN_COOKIE`、`DOUYIN_CLIENT_KEY`、`DOUYIN_CLIENT_SECRET`、`DOUYIN_ACCESS_TOKEN`、`DOUYIN_HOME`。
+`douyin live info "房间 ID"` 已接入安卓房间查询代码，只输出房间摘要，不打印推拉流地址。摘要中的 `sdk_stream_type` 按已核对的 SDK 规则区分视频、音频、录屏、第三方和媒体房间；字段不完整时为 `null`，这个分类不等同于手机身份开播证明。当前独立请求仍受签名和风控限制，尚未通过真实房间验收。
 
-所有参数以 CLI 自带帮助为准：
+OBS 28+ 自带 WebSocket，在 OBS 的工具菜单里启用。默认连接本机 `4455` 端口，密码用 `DOUYIN_OBS_PASSWORD` 环境变量提供。
+
+```bash
+douyin live obs status
+douyin live obs configure-push --stream-file ./private-stream.json --yes
+douyin live obs add-source --url-file ./private-pull-url.txt --scene "场景名" --yes
+douyin live obs stop --yes
+```
+
+推流配置文件是 `{"server":"rtmps://推流主机/路径/","key":"推流密钥"}`。拉流文件只放完整的直播播放地址。文件里有私密地址和密钥，自己保管，不要提交到仓库。
+
+`configure-push` 默认只配置，增加 `--start` 才启动 OBS 推流；已经推流时拒绝替换目标。`add-source` 在指定场景新建媒体源，重名会报错。`stop` 停止 OBS 推流，抖音直播间的结束流程还要单独实现。
+
+这部分已用隔离的 OBS 33.0.1 验证连接、密码认证、配置目标但不启动、创建媒体源和空闲停止。尚未验证真实直播画面和推流。安卓身份开播、独立签名、自动取得推拉流地址仍在开发；目前需要已有地址，不能算手机端开播已经实现。
+
+## 下载媒体链接
+
+```bash
+douyin download "抖音 CDN 的 HTTPS 媒体链接" -o ./media.jpg
+```
+
+下载不会把登录 Cookie 发给媒体主机。文件完整写入后才提交，已有的非空文件会跳过。
+
+## 离线分析
+
+已有的评论、作品数据可以直接拿来分析，不用联网。
+
+```bash
+douyin insights comments.json --top 20 --min-count 2
+douyin insights comments.jsonl --format markdown -o insights.md
+douyin stats works.json --sort score --top 10
+douyin stats works.jsonl --author 作者名 --format markdown
+```
+
+`insights` 看词频、热梗候选和需求关键词。`stats` 统计点赞、评论、收藏、分享，支持旧版导出和原始接口数据。缺失的数据会标出来，不会当成真的零。
+
+这些是规则分析，综合分也不是互动率，别拿它代替实际判断。
+
+## 接下来补什么
+
+搜索、作品列表和评论的联网流程还在验证，网页 Cookie 采集后端也要补齐。推荐、互动、发布、草稿、直播、消息和账号设置都在范围内，不能只做到命令能解析。
+
+这些还没有全部实现，不能拿一个通用请求命令就说“所有功能都支持”。具体进度和验收要求放在 [重建记录](docs/rebuild.md)。
+
+如果你要用已发布的旧版：
+
+```bash
+cargo install douyin-cli --locked
+```
+
+也可以在 Arch Linux 上安装：
+
+```bash
+paru -S douyin-cli
+```
+
+发布渠道里的版本和当前开发分支有区别。旧版命令看 [旧版使用说明](https://github.com/LIghtJUNction/douyin/blob/6fd6055/USAGE.md)，新版以实际帮助为准：
 
 ```bash
 douyin --help
 douyin auth --help
-douyin api --help
-douyin comment --help
-douyin insights --help
-douyin stats --help
 ```
 
-更多示例见 [USAGE.md](USAGE.md)。
+## 配置放哪
 
-## Agent Skill
+登录态保存在 `douyin-cli` 配置目录下的 `session.json`。默认位置：
 
-```bash
-bunx skills add LIghtJUNction/douyin -g
-# 或：npx skills add LIghtJUNction/douyin -g
-```
+- Linux / macOS：`~/.config/douyin-cli/session.json`，设置了 `XDG_CONFIG_HOME` 时使用该目录。
+- Windows：`%APPDATA%\douyin-cli\session.json`。
+- 设置 `DOUYIN_HOME` 可以单独指定目录，测试时也用这个隔离配置。
 
-## 开发验证
+同一目录下，`oauth.json` 保存开放平台授权，`cookie.json` 保存网页 Cookie。旧版 `config/settings.json` 中的 OAuth 和 Cookie 可以兼容读取。`auth logout` 清除设备登录与 OAuth，网页 Cookie 用 `auth cookie-logout` 单独清除。
+
+里面有登录凭据，别上传到仓库，也别贴到 Issue 里。
+
+## 本地验证
 
 ```bash
 cargo fmt --check
-cargo test --locked
-cargo clippy --locked --all-targets -- -D warnings
-cargo build --release --locked
-cargo package --locked
+cargo test --locked --offline
+cargo clippy --locked --offline --all-targets -- -D warnings
+cargo build --release --locked --offline
+cargo package --locked --offline
+```
+
+测试通过和手机上能用是两回事，都要验。
+
+修改应用内通道脚本时，还要用开发机上的 Node 跑隔离测试，检查账号切换、设备变化、路径和参数是否会在请求前被拦下：
+
+```bash
+node tools/test-phone-agent.mjs
+```
+
+手机元数据辅助程序的源码和编译产物都在 `assets/device-metadata/`。正常安装和运行直接使用包内产物。修改这部分源码时，需要 JDK、Android SDK platform 36 和 build-tools 35.0.0：
+
+```bash
+bash tools/build-device-helper.sh
+bash tools/build-device-helper.sh --check
 ```
 
 ## License

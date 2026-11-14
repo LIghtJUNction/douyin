@@ -1,0 +1,32 @@
+[
+  {
+    "input": "fixture-legacy-proof",
+    "ts_sign": "fixture-legacy-proof",
+    "ts_sign_ree": null
+  },
+  {
+    "input": "{\"ts_sign\":\"fixture-tee\",\"ts_sign_ree\":\"fixture-ree\"}",
+    "ts_sign": "fixture-tee",
+    "ts_sign_ree": "fixture-ree"
+  },
+  {
+    "input": "{\"ts_sign\":\"fixture-tee\"}",
+    "ts_sign": "fixture-tee",
+    "ts_sign_ree": null
+  },
+  {
+    "input": "{\"ts_sign_ree\":\"fixture-ree\"}",
+    "ts_sign": null,
+    "ts_sign_ree": "fixture-ree"
+  },
+  {
+    "input": "{\"ts_sign\":null,\"ts_sign_ree\":null}",
+    "ts_sign": null,
+    "ts_sign_ree": null
+  },
+  {
+    "input": "{}",
+    "ts_sign": null,
+    "ts_sign_ree": null
+  }
+]

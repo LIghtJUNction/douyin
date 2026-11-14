@@ -1,0 +1,17 @@
+[
+  "/aweme/v1/user/profile/self/",
+  "/aweme/v1/user/profile/other/",
+  "/aweme/v1/aweme/detail/",
+  "/aweme/v1/aweme/post/",
+  "/aweme/v1/aweme/favorite/",
+  "/aweme/v1/aweme/listcollection/",
+  "/aweme/v1/challenge/aweme/",
+  "/aweme/v1/feed/",
+  "/aweme/v1/general/search/single/",
+  "/aweme/v1/mix/aweme/",
+  "/aweme/v1/music/aweme/",
+  "/aweme/v1/user/follower/list/",
+  "/aweme/v1/user/following/list/",
+  "/aweme/v2/comment/list/",
+  "/aweme/v1/comment/list/reply/"
+]

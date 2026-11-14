@@ -1,17 +1,35 @@
-//! Deterministic, offline text-frequency heuristics for content insights.
-
-use std::collections::HashMap;
-use std::fmt::Write as _;
+//! Deterministic text counts and traceable demand signals; no network or model.
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use clap::{Args, ValueEnum};
-use serde_json::{Map, Value, json};
+use clap::Args;
+use serde_json::{Value, json};
 
-use crate::{err, fs_utils};
+use crate::{io, stats::OutputFormat};
 
-const DEFAULT_TOP: usize = 20;
-const DEFAULT_MIN_COUNT: u64 = 2;
-const STOP_WORDS: &[&str] = &[
+const DEMAND_SIGNALS: &[&str] = &[
+    "想要",
+    "需要",
+    "求",
+    "哪里",
+    "怎么",
+    "如何",
+    "有没有",
+    "能不能",
+    "推荐",
+    "多少钱",
+    "价格",
+    "链接",
+    "教程",
+    "怎么买",
+    "在哪买",
+    "同款",
+    "问题",
+    "希望",
+    "建议",
+    "支持",
+];
+const STOP: &[&str] = &[
     "一个",
     "一些",
     "不是",
@@ -55,7 +73,6 @@ const STOP_WORDS: &[&str] = &[
     "多少钱",
     "链接",
     "教程",
-    "求",
     "的",
     "了",
     "呢",
@@ -85,36 +102,13 @@ const STOP_WORDS: &[&str] = &[
     "让",
     "要",
 ];
-const ENGLISH_STOP_WORDS: &[&str] = &[
+const ENGLISH_STOP: &[&str] = &[
     "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from", "has", "have", "he",
     "her", "his", "i", "in", "is", "it", "me", "my", "not", "of", "on", "or", "our", "she", "so",
     "that", "the", "their", "them", "they", "this", "to", "was", "we", "were", "what", "when",
     "where", "which", "who", "why", "with", "you", "your",
 ];
-const DEMAND_SIGNALS: &[&str] = &[
-    "想要",
-    "求",
-    "哪里",
-    "怎么",
-    "有没有",
-    "能不能",
-    "需要",
-    "推荐",
-    "多少钱",
-    "链接",
-    "教程",
-    "怎么买",
-    "在哪买",
-    "同款",
-    "价格",
-    "求助",
-    "如何",
-    "问题",
-    "希望",
-    "建议",
-    "支持",
-];
-const MEME_MARKERS: &[&str] = &[
+const MEMES: &[&str] = &[
     "绝绝子",
     "笑死",
     "谁懂啊",
@@ -124,17 +118,28 @@ const MEME_MARKERS: &[&str] = &[
     "绷不住",
     "破防了",
     "yyds",
-    "YYDS",
     "666",
 ];
 
-/// One input text and its optional interaction-derived weight.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, Args)]
+pub struct InsightsArgs {
+    /// JSON、JSONL、ChatML 或纯文本；- 读取标准输入
+    input: String,
+    #[arg(long, default_value_t = 20)]
+    top: usize,
+    #[arg(long, default_value_t = 2)]
+    min_count: u64,
+    #[arg(long, value_enum, default_value = "json")]
+    format: OutputFormat,
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextRecord {
     pub text: String,
     pub weight: Option<u64>,
 }
-
 impl TextRecord {
     pub fn new(text: impl Into<String>, weight: Option<u64>) -> Self {
         Self {
@@ -144,347 +149,233 @@ impl TextRecord {
     }
 }
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
-pub enum OutputFormat {
-    Json,
-    Markdown,
-}
-
-/// Discover hot words, memes, and demand-like source lines from local text.
-#[derive(Debug, Args)]
-pub struct InsightsArgs {
-    /// 输入文件路径，或 - 从 stdin 读取
-    input: String,
-    /// 每类结果最多输出条数
-    #[arg(long, default_value_t = DEFAULT_TOP)]
-    top: usize,
-    /// 结果至少出现次数
-    #[arg(long, default_value_t = DEFAULT_MIN_COUNT)]
-    min_count: u64,
-    /// 输出格式
-    #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
-    format: OutputFormat,
-    /// 输出文件；不传则输出到 stdout
-    #[arg(short, long)]
-    output: Option<PathBuf>,
-}
-
-pub fn run(args: InsightsArgs) -> Result<(), String> {
-    let input = fs_utils::read_input(&args.input)?;
-    let records = parse_records(&input);
-    let result = analyze(&records, args.top, args.min_count);
-    let rendered = match args.format {
-        OutputFormat::Json => serde_json::to_string_pretty(&result).map_err(err)?,
-        OutputFormat::Markdown => render_markdown(&result),
-    };
-    fs_utils::write_output(&rendered, args.output.as_deref())
-}
-
-/// Analyze records without network access or semantic-model inference.
-pub fn analyze(records: &[TextRecord], top: usize, min_count: u64) -> Value {
-    let mut words: HashMap<String, Aggregate> = HashMap::new();
-    let mut memes: HashMap<String, Aggregate> = HashMap::new();
-    let mut demands: HashMap<String, DemandAggregate> = HashMap::new();
-
-    for record in records {
-        let text = normalize_space(&record.text);
-        if text.is_empty() {
-            continue;
-        }
-        let weight = record.weight.unwrap_or(1).max(1);
-        for word in word_tokens(&text) {
-            words.entry(word).or_default().add(weight);
-        }
-        for meme in meme_candidates(&text) {
-            memes.entry(meme).or_default().add(weight);
-        }
-        let signals: Vec<_> = DEMAND_SIGNALS
-            .iter()
-            .filter(|signal| text.contains(**signal))
-            .map(|signal| (*signal).to_owned())
-            .collect();
-        if !signals.is_empty() {
-            demands
-                .entry(text)
-                .or_default()
-                .add(weight, signals.into_iter());
-        }
-    }
-
-    json!({
-        "input_count": records.len(),
-        "hot_words": ranked_aggregates(words, top, min_count),
-        "hot_memes": ranked_aggregates(memes, top, min_count),
-        "demands": ranked_demands(demands, top, min_count),
-    })
-}
-
-/// Parse JSON, JSONL, or non-empty plain-text lines into weighted records.
-pub fn parse_records(input: &str) -> Vec<TextRecord> {
-    if let Ok(value) = serde_json::from_str::<Value>(input)
-        && matches!(
-            &value,
-            Value::Object(_) | Value::Array(_) | Value::String(_)
-        )
-    {
-        let mut records = Vec::new();
-        extract_value(&value, 1, &mut records);
-        if !records.is_empty() {
-            return records;
-        }
-    }
-
-    let lines: Vec<_> = input
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .collect();
-    if !lines.is_empty() {
-        let parsed: Result<Vec<Value>, _> = lines
-            .iter()
-            .map(|line| serde_json::from_str::<Value>(line))
-            .collect();
-        if let Ok(values) = parsed {
-            let mut records = Vec::new();
-            for value in values {
-                let mut extracted = Vec::new();
-                extract_value(&value, 1, &mut extracted);
-                if extracted.is_empty() {
-                    records.clear();
-                    break;
-                }
-                records.extend(extracted);
-            }
-            if !records.is_empty() {
-                return records;
-            }
-        }
-    }
-
-    lines
-        .into_iter()
-        .map(|line| TextRecord::new(line.trim(), None))
-        .collect()
-}
-
-fn extract_value(value: &Value, inherited_weight: u64, records: &mut Vec<TextRecord>) {
-    match value {
-        Value::String(text) => push_record(records, text, inherited_weight),
-        Value::Array(values) => {
-            for value in values {
-                extract_value(value, inherited_weight, records);
-            }
-        }
-        Value::Object(object) => {
-            let metadata_weight = object
-                .get("metadata")
-                .and_then(Value::as_object)
-                .and_then(object_weight);
-            let weight = object_weight(object)
-                .or(metadata_weight)
-                .unwrap_or(inherited_weight)
-                .max(1);
-            if let Some(messages) = object.get("messages").and_then(Value::as_array) {
-                for message in messages {
-                    if let Some(content) = message.get("content").and_then(Value::as_str) {
-                        push_record(records, content, weight);
-                    }
-                }
-            } else {
-                for key in ["text", "desc", "content"] {
-                    if let Some(text) = object.get(key).and_then(Value::as_str) {
-                        push_record(records, text, weight);
-                    }
-                }
-                if let Some(tag) = object.get("tag") {
-                    extract_tag(tag, weight, records);
-                }
-                if let Some(text_extra) = object.get("text_extra") {
-                    extract_text_extra(text_extra, weight, records);
-                }
-            }
-            for (key, nested) in object {
-                if matches!(
-                    key.as_str(),
-                    "messages"
-                        | "text"
-                        | "desc"
-                        | "content"
-                        | "tag"
-                        | "text_extra"
-                        | "weight"
-                        | "digg_count"
-                        | "quality_score"
-                        | "score"
-                ) {
-                    continue;
-                }
-                if nested.is_array() || nested.is_object() {
-                    extract_value(nested, weight, records);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn extract_text_extra(value: &Value, weight: u64, records: &mut Vec<TextRecord>) {
-    match value {
-        Value::Array(values) => {
-            for value in values {
-                extract_text_extra(value, weight, records);
-            }
-        }
-        Value::Object(object) => {
-            if let Some(tag_name) = object.get("tag_name").and_then(Value::as_str) {
-                let tag_name = tag_name.trim();
-                if !tag_name.is_empty() {
-                    let topic = if tag_name.starts_with('#') {
-                        tag_name.to_owned()
-                    } else {
-                        format!("#{tag_name}")
-                    };
-                    push_record(records, &topic, weight);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn extract_tag(value: &Value, weight: u64, records: &mut Vec<TextRecord>) {
-    match value {
-        Value::String(text) => push_record(records, text, weight),
-        Value::Array(values) => {
-            for value in values {
-                extract_tag(value, weight, records);
-            }
-        }
-        Value::Object(object) => {
-            for key in ["text", "name", "title", "tag_name"] {
-                if let Some(text) = object.get(key).and_then(Value::as_str) {
-                    push_record(records, text, weight);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn push_record(records: &mut Vec<TextRecord>, text: &str, weight: u64) {
-    let text = text.trim();
-    if !text.is_empty() {
-        records.push(TextRecord::new(text, Some(weight)));
-    }
-}
-
-fn object_weight(object: &Map<String, Value>) -> Option<u64> {
-    ["weight", "quality_score", "digg_count", "score"]
-        .into_iter()
-        .find_map(|key| numeric_value(object.get(key)?))
-        .map(|value| value.saturating_add(1))
-}
-
-fn numeric_value(value: &Value) -> Option<u64> {
-    value
-        .as_u64()
-        .or_else(|| value.as_i64().and_then(|value| value.try_into().ok()))
-        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
-}
-
 #[derive(Default)]
-struct Aggregate {
+struct Tally {
     count: u64,
     score: u64,
+    signals: BTreeSet<&'static str>,
 }
-
-impl Aggregate {
+impl Tally {
     fn add(&mut self, weight: u64) {
         self.count = self.count.saturating_add(1);
         self.score = self.score.saturating_add(weight);
     }
 }
 
-#[derive(Default)]
-struct DemandAggregate {
-    count: u64,
-    score: u64,
-    signals: Vec<String>,
+pub fn run(args: InsightsArgs) -> Result<(), String> {
+    let input = io::read_input(&args.input)?;
+    let records = parse_records(&input)?;
+    let result = analyze(&records, args.top, args.min_count);
+    let rendered = match args.format {
+        OutputFormat::Json => {
+            serde_json::to_string_pretty(&result).map_err(|_| "分析结果序列化失败")?
+        }
+        OutputFormat::Markdown => render_markdown(&result),
+    };
+    io::write_output(&rendered, args.output.as_deref())
 }
 
-impl DemandAggregate {
-    fn add(&mut self, weight: u64, signals: impl Iterator<Item = String>) {
-        self.count = self.count.saturating_add(1);
-        self.score = self.score.saturating_add(weight);
-        for signal in signals {
-            if !self.signals.contains(&signal) {
-                self.signals.push(signal);
+pub fn parse_records(input: &str) -> Result<Vec<TextRecord>, String> {
+    let mut records = Vec::new();
+    match io::json_documents(input) {
+        Ok(documents) => {
+            for value in &documents {
+                extract(value, 1, &mut records);
+            }
+        }
+        Err(error) if input.trim_start().starts_with(['{', '[', '"']) => return Err(error),
+        Err(_) => {
+            for line in input.lines() {
+                push(&mut records, line, 1);
             }
         }
     }
+    if records.is_empty() {
+        return Err("输入没有可分析的文本记录".into());
+    }
+    Ok(records)
 }
 
-fn ranked_aggregates(values: HashMap<String, Aggregate>, top: usize, min_count: u64) -> Vec<Value> {
-    let mut values: Vec<_> = values
-        .into_iter()
-        .filter(|(_, value)| value.count >= min_count)
-        .collect();
-    values.sort_by(|left, right| {
-        right
-            .1
-            .score
-            .cmp(&left.1.score)
-            .then_with(|| right.1.count.cmp(&left.1.count))
-            .then_with(|| left.0.cmp(&right.0))
-    });
-    values
-        .into_iter()
-        .take(top)
-        .map(|(text, value)| json!({"text":text, "count":value.count, "score":value.score}))
-        .collect()
+fn extract(value: &Value, inherited: u64, records: &mut Vec<TextRecord>) {
+    match value {
+        Value::String(text) => push(records, text, inherited),
+        Value::Array(values) => {
+            for child in values {
+                extract(child, inherited, records);
+            }
+        }
+        Value::Object(map) => {
+            let weight = weight(value)
+                .or_else(|| weight(&value["metadata"]))
+                .unwrap_or(inherited);
+            if let Some(messages) = value["messages"].as_array() {
+                for message in messages {
+                    if let Some(text) = message["content"].as_str() {
+                        push(records, text, weight);
+                    }
+                }
+            } else {
+                for key in ["text", "content", "desc"] {
+                    if let Some(text) = value[key].as_str() {
+                        push(records, text, weight);
+                    }
+                }
+                if let Some(tags) = value["text_extra"].as_array() {
+                    for tag in tags {
+                        if let Some(name) = tag["tag_name"]
+                            .as_str()
+                            .or_else(|| tag["hashtag_name"].as_str())
+                        {
+                            push(
+                                records,
+                                &format!("#{}", name.trim_start_matches('#')),
+                                weight,
+                            );
+                        }
+                    }
+                }
+                if let Some(tags) = map.get("tag") {
+                    extract_tags(tags, weight, records);
+                }
+            }
+            for (key, child) in map {
+                if !matches!(
+                    key.as_str(),
+                    "messages" | "text" | "content" | "desc" | "text_extra" | "tag" | "metadata"
+                ) && (child.is_object() || child.is_array())
+                {
+                    extract(child, weight, records);
+                }
+            }
+        }
+        _ => (),
+    }
 }
 
-fn ranked_demands(
-    values: HashMap<String, DemandAggregate>,
-    top: usize,
-    min_count: u64,
-) -> Vec<Value> {
-    let mut values: Vec<_> = values
+fn extract_tags(value: &Value, weight: u64, records: &mut Vec<TextRecord>) {
+    match value {
+        Value::String(text) => push(records, text, weight),
+        Value::Array(tags) => {
+            for tag in tags {
+                extract_tags(tag, weight, records);
+            }
+        }
+        Value::Object(_) => {
+            for key in ["text", "name", "title", "tag_name"] {
+                if let Some(text) = value[key].as_str() {
+                    push(records, text, weight);
+                }
+            }
+        }
+        _ => (),
+    }
+}
+fn weight(value: &Value) -> Option<u64> {
+    ["weight", "quality_score", "digg_count", "score"]
+        .iter()
+        .find_map(|key| {
+            value[*key]
+                .as_u64()
+                .or_else(|| value[*key].as_str()?.parse().ok())
+        })
+        .map(|n| n.saturating_add(1))
+}
+fn push(records: &mut Vec<TextRecord>, text: &str, weight: u64) {
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if !text.is_empty() {
+        records.push(TextRecord::new(text, Some(weight.max(1))));
+    }
+}
+
+pub fn analyze(records: &[TextRecord], top: usize, min_count: u64) -> Value {
+    let mut words = BTreeMap::<String, Tally>::new();
+    let mut memes = BTreeMap::<String, Tally>::new();
+    let mut demands = BTreeMap::<String, Tally>::new();
+    for record in records {
+        let text = record.text.split_whitespace().collect::<Vec<_>>().join(" ");
+        if text.is_empty() {
+            continue;
+        }
+        let weight = record.weight.unwrap_or(1).max(1);
+        for token in tokens(&text) {
+            words.entry(token).or_default().add(weight);
+        }
+        let mut candidates = BTreeSet::new();
+        for clause in text.split(|c: char| c.is_whitespace() || "，。！？,.!?；;：:".contains(c))
+        {
+            let length = clause.chars().count();
+            if (2..=18).contains(&length)
+                && (length <= 10
+                    || MEMES.iter().any(|m| clause.to_lowercase().contains(m))
+                    || clause.chars().any(emoji))
+            {
+                candidates.insert(clause.to_owned());
+            }
+            let emojis: String = clause.chars().filter(|c| emoji(*c)).collect();
+            if !emojis.is_empty() {
+                candidates.insert(emojis);
+            }
+        }
+        for candidate in candidates {
+            memes.entry(candidate).or_default().add(weight);
+        }
+        let signals: BTreeSet<_> = DEMAND_SIGNALS
+            .iter()
+            .copied()
+            .filter(|signal| text.contains(signal))
+            .collect();
+        if !signals.is_empty() {
+            let tally = demands.entry(text).or_default();
+            tally.add(weight);
+            tally.signals.extend(signals);
+        }
+    }
+    json!({"input_count":records.len(),"hot_words":rank(words,top,min_count,false),
+        "hot_memes":rank(memes,top,min_count,false),"demands":rank(demands,top,min_count,true)})
+}
+
+fn rank(values: BTreeMap<String, Tally>, top: usize, min_count: u64, signals: bool) -> Vec<Value> {
+    let mut rows: Vec<_> = values
         .into_iter()
-        .filter(|(_, value)| value.count >= min_count)
+        .filter(|(_, t)| t.count >= min_count)
         .collect();
-    values.sort_by(|left, right| {
-        right
-            .1
-            .score
-            .cmp(&left.1.score)
-            .then_with(|| right.1.count.cmp(&left.1.count))
-            .then_with(|| left.0.cmp(&right.0))
+    rows.sort_by(|a, b| {
+        b.1.score
+            .cmp(&a.1.score)
+            .then_with(|| b.1.count.cmp(&a.1.count))
+            .then_with(|| a.0.cmp(&b.0))
     });
-    values
-        .into_iter()
+    rows.into_iter()
         .take(top)
-        .map(|(text, value)| {
-            json!({"text":text, "count":value.count, "score":value.score, "signals":value.signals})
+        .map(|(text, t)| {
+            let mut row = json!({"text":text,"count":t.count,"score":t.score});
+            if signals {
+                row["signals"] = json!(t.signals);
+            }
+            row
         })
         .collect()
 }
 
-fn word_tokens(text: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
+fn tokens(text: &str) -> Vec<String> {
     let chars: Vec<_> = text.chars().collect();
+    let mut result = Vec::new();
     let mut index = 0;
     while index < chars.len() {
+        let start = index;
         if chars[index] == '#' {
-            let start = index;
             index += 1;
-            while index < chars.len() && is_word_char(chars[index]) {
+            while index < chars.len()
+                && (han(chars[index])
+                    || chars[index].is_ascii_alphanumeric()
+                    || chars[index] == '_')
+            {
                 index += 1;
             }
             if index > start + 1 {
-                tokens.push(chars[start..index].iter().collect::<String>());
+                result.push(chars[start..index].iter().collect());
             }
         } else if chars[index].is_ascii_alphanumeric() {
-            let start = index;
             index += 1;
             while index < chars.len()
                 && (chars[index].is_ascii_alphanumeric() || matches!(chars[index], '_' | '-' | '.'))
@@ -495,321 +386,127 @@ fn word_tokens(text: &str) -> Vec<String> {
                 .iter()
                 .collect::<String>()
                 .to_ascii_lowercase();
-            if !ENGLISH_STOP_WORDS.contains(&token.as_str()) {
-                tokens.push(token);
+            if !ENGLISH_STOP.contains(&token.as_str()) {
+                result.push(token);
             }
-        } else if is_han(chars[index]) {
-            let start = index;
+        } else if han(chars[index]) {
             index += 1;
-            while index < chars.len() && is_han(chars[index]) {
+            while index < chars.len() && han(chars[index]) {
                 index += 1;
             }
-            let segment = chars[start..index].iter().collect::<String>();
-            for chunk in split_han_chunks(&segment) {
-                let length = chunk.chars().count();
-                if (2..=8).contains(&length) && !STOP_WORDS.contains(&chunk.as_str()) {
-                    tokens.push(chunk.clone());
-                }
-                if length > 4 {
-                    let chunk_chars: Vec<_> = chunk.chars().collect();
-                    for size in 2..=4 {
-                        for window in chunk_chars.windows(size) {
-                            let token = window.iter().collect::<String>();
-                            if !STOP_WORDS.contains(&token.as_str()) {
-                                tokens.push(token);
-                            }
-                        }
-                    }
+            let segment: String = chars[start..index].iter().collect();
+            let mut offset = 0;
+            let mut chunk = String::new();
+            while offset < segment.len() {
+                let rest = &segment[offset..];
+                if let Some(stop) = STOP
+                    .iter()
+                    .filter(|stop| rest.starts_with(**stop))
+                    .max_by_key(|s| s.len())
+                {
+                    add_chunk(&chunk, &mut result);
+                    chunk.clear();
+                    offset += stop.len();
+                } else if let Some(c) = rest.chars().next() {
+                    chunk.push(c);
+                    offset += c.len_utf8();
                 }
             }
+            add_chunk(&chunk, &mut result);
         } else {
             index += 1;
         }
     }
-    tokens
+    result
 }
-
-fn split_han_chunks(segment: &str) -> Vec<String> {
-    let mut chunks = Vec::new();
-    let mut current = String::new();
-    let mut offset = 0;
-    while offset < segment.len() {
-        let rest = &segment[offset..];
-        let stop = STOP_WORDS
-            .iter()
-            .filter(|word| rest.starts_with(**word))
-            .max_by_key(|word| word.len());
-        if let Some(stop) = stop {
-            if !current.is_empty() {
-                chunks.push(std::mem::take(&mut current));
+fn add_chunk(chunk: &str, result: &mut Vec<String>) {
+    let chars: Vec<_> = chunk.chars().collect();
+    if (2..=8).contains(&chars.len()) {
+        result.push(chunk.to_owned());
+    }
+    if chars.len() > 4 {
+        for size in 2..=4 {
+            for window in chars.windows(size) {
+                let token: String = window.iter().collect();
+                if !STOP.contains(&token.as_str()) {
+                    result.push(token);
+                }
             }
-            offset += stop.len();
-        } else if let Some(character) = rest.chars().next() {
-            current.push(character);
-            offset += character.len_utf8();
         }
     }
-    if !current.is_empty() {
-        chunks.push(current);
-    }
-    chunks
 }
-
-fn meme_candidates(text: &str) -> Vec<String> {
-    let mut candidates = Vec::new();
-    for clause in text.split(|character: char| {
-        character.is_whitespace()
-            || matches!(
-                character,
-                '，' | '。' | '！' | '？' | ',' | '.' | '!' | '?' | '；' | ';' | '：' | ':'
-            )
-    }) {
-        let clause = clause.trim();
-        let length = clause.chars().count();
-        if (2..=18).contains(&length)
-            && (MEME_MARKERS.iter().any(|marker| clause.contains(marker))
-                || clause.chars().any(is_emoji)
-                || length <= 10)
-        {
-            candidates.push(clause.to_owned());
-        }
-        let emoji: String = clause
-            .chars()
-            .filter(|character| is_emoji(*character))
-            .collect();
-        if !emoji.is_empty() {
-            candidates.push(emoji);
-        }
-    }
-    candidates.sort();
-    candidates.dedup();
-    candidates
+fn han(c: char) -> bool {
+    matches!(c,'\u{3400}'..='\u{4dbf}'|'\u{4e00}'..='\u{9fff}'|'\u{f900}'..='\u{faff}'|'\u{20000}'..='\u{2fa1f}')
 }
-
-fn normalize_space(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
+fn emoji(c: char) -> bool {
+    matches!(c,'\u{1f000}'..='\u{1faff}'|'\u{2600}'..='\u{27bf}')
 }
-
-fn is_word_char(character: char) -> bool {
-    is_han(character) || character.is_ascii_alphanumeric() || character == '_'
-}
-
-fn is_han(character: char) -> bool {
-    matches!(character, '\u{3400}'..='\u{4dbf}' | '\u{4e00}'..='\u{9fff}' | '\u{f900}'..='\u{faff}')
-}
-
-fn is_emoji(character: char) -> bool {
-    matches!(
-        character,
-        '\u{1f000}'..='\u{1faff}' | '\u{2600}'..='\u{26ff}' | '\u{2700}'..='\u{27bf}'
-    )
-}
-
 fn render_markdown(result: &Value) -> String {
     let mut output = format!("# 内容洞察\n\n输入记录：{}\n", result["input_count"]);
     for (title, key) in [
         ("热词", "hot_words"),
-        ("热梗", "hot_memes"),
-        ("需求发现", "demands"),
+        ("热梗候选", "hot_memes"),
+        ("需求线索", "demands"),
     ] {
-        let _ = write!(output, "\n## {title}\n\n");
-        let Some(items) = result[key].as_array() else {
-            continue;
-        };
-        if items.is_empty() {
-            output.push_str("- 无\n");
-            continue;
-        }
-        for item in items {
-            let signals = item["signals"]
-                .as_array()
-                .map(|values| {
-                    values
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .collect::<Vec<_>>()
-                        .join("、")
-                })
-                .filter(|value| !value.is_empty())
-                .map(|value| format!("；信号：{value}"))
-                .unwrap_or_default();
-            let _ = writeln!(
-                output,
-                "- {}（次数：{}，分数：{}{signals}）",
-                item["text"].as_str().unwrap_or(""),
-                item["count"],
-                item["score"]
-            );
+        output.push_str(&format!("\n## {title}\n\n"));
+        if let Some(items) = result[key].as_array() {
+            if items.is_empty() {
+                output.push_str("- 无\n");
+            }
+            for row in items {
+                output.push_str(&format!(
+                    "- {}（次数 {}，权重 {}）\n",
+                    row["text"].as_str().unwrap_or(""),
+                    row["count"],
+                    row["score"]
+                ));
+            }
         }
     }
+    output.push_str("\n结果来自词频与关键词规则，不代表语义理解或市场结论。\n");
     output
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{TextRecord, analyze, parse_records};
-    use serde_json::json;
-
+    use super::*;
     #[test]
-    fn hot_words_exclude_stop_words_and_keep_topic() {
-        let result = analyze(
-            &[
-                TextRecord::new("这个露营灯真的好用 #露营装备", None),
-                TextRecord::new("露营灯推荐 #露营装备", None),
-            ],
-            20,
-            2,
-        );
-        assert!(
-            result["hot_words"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|value| value["text"] == "露营灯" && value["count"] == 2)
-        );
-        assert!(
-            result["hot_words"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|value| value["text"] == "#露营装备" && value["count"] == 2)
-        );
-        assert!(
-            !result["hot_words"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|value| value["text"] == "这个" || value["text"] == "真的")
-        );
-    }
-
-    #[test]
-    fn repeated_meme_requires_minimum_count() {
-        let result = analyze(
-            &[
-                TextRecord::new("绝绝子 😂", None),
-                TextRecord::new("绝绝子 😂", None),
-                TextRecord::new("只出现一次", None),
-            ],
-            20,
-            2,
-        );
-        assert!(
-            result["hot_memes"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|value| value["text"] == "绝绝子" && value["count"] == 2)
-        );
-    }
-
-    #[test]
-    fn demands_include_signals_and_sort_by_interaction_weight() {
-        let result = analyze(
-            &[
-                TextRecord::new("求购买链接", Some(3)),
-                TextRecord::new("求购买链接", Some(3)),
-                TextRecord::new("怎么安装教程", Some(10)),
-                TextRecord::new("怎么安装教程", Some(10)),
-            ],
-            20,
-            2,
-        );
-        assert_eq!(result["demands"][0]["text"], "怎么安装教程");
-        assert_eq!(result["demands"][0]["signals"], json!(["怎么", "教程"]));
-    }
-
-    #[test]
-    fn raw_comments_extract_replies_and_interaction_weights() {
-        let records = parse_records(
-            r#"{"comments":[{"text":"主评论","digg_count":8,"replies":[{"text":"回复","digg_count":3}]}]}"#,
-        );
+    fn extracts_chatml_and_comment_replies_without_author_names() {
+        let input = r#"{"comments":[{"text":"需要教程","digg_count":3,"user":{"nickname":"不应分析的作者"},"replies":[{"text":"求链接"}]}],"messages":[{"role":"user","content":"Rust rust"}],"metadata":{"weight":5}}"#;
+        let rows = parse_records(input).unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].text, "Rust rust");
+        assert!(rows.iter().all(|r| !r.text.contains("作者")));
         assert_eq!(
-            records,
-            vec![
-                TextRecord::new("主评论", Some(9)),
-                TextRecord::new("回复", Some(4))
-            ]
+            rows.iter().find(|r| r.text == "需要教程").unwrap().weight,
+            Some(4)
         );
     }
-
     #[test]
-    fn jsonl_extracts_chatml_content() {
-        let records = parse_records(
-            "{\"messages\":[{\"role\":\"user\",\"content\":\"第一条\"}]}\n{\"messages\":[{\"role\":\"assistant\",\"content\":\"第二条\"}]}",
-        );
-        assert_eq!(records.len(), 2);
+    fn weighted_count_and_unicode_are_deterministic() {
+        let rows = vec![
+            TextRecord::new("Rust rust #测试", Some(4)),
+            TextRecord::new("Rust #测试", Some(2)),
+        ];
+        let result = analyze(&rows, 20, 2);
+        let words = result["hot_words"].as_array().unwrap();
+        let rust = words.iter().find(|row| row["text"] == "rust").unwrap();
+        assert_eq!(rust["count"], 3);
+        assert_eq!(rust["score"], 10);
+        assert!(words.iter().any(|row| row["text"] == "#测试"));
+        assert_eq!(analyze(&rows, 0, 1)["hot_words"], json!([]));
     }
-
     #[test]
-    fn crawler_text_extra_extracts_repeated_topic() {
-        let records = parse_records(
-            r##"[
-                {"desc":"第一次露营","text_extra":[{"tag_name":"露营装备"}]},
-                {"desc":"帐篷体验","text_extra":[{"tag_name":"#露营装备"}]}
-            ]"##,
-        );
-        let result = analyze(&records, 20, 2);
-        assert!(
-            result["hot_words"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|value| value["text"] == "#露营装备" && value["count"] == 2)
-        );
-    }
-
-    #[test]
-    fn chatml_metadata_quality_score_orders_demands() {
-        let records = parse_records(
-            r#"[
-                {"messages":[{"role":"user","content":"求低分链接"}],"metadata":{"quality_score":1}},
-                {"messages":[{"role":"user","content":"求低分链接"}],"metadata":{"quality_score":1}},
-                {"messages":[{"role":"user","content":"求高分链接"}],"metadata":{"quality_score":20}},
-                {"messages":[{"role":"user","content":"求高分链接"}],"metadata":{"quality_score":20}}
-            ]"#,
-        );
-        let result = analyze(&records, 20, 2);
-        assert_eq!(result["demands"][0]["text"], "求高分链接");
-    }
-
-    #[test]
-    fn numeric_jsonl_falls_back_to_plain_text() {
-        let records = parse_records("666\n666\n");
-        let result = analyze(&records, 20, 2);
-        assert_eq!(result["input_count"], 2);
-        assert!(
-            result["hot_memes"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|value| value["text"] == "666" && value["count"] == 2)
-        );
-    }
-
-    #[test]
-    fn single_numeric_json_falls_back_to_plain_text() {
-        let records = parse_records("666");
-        let result = analyze(&records, 20, 1);
-        assert_eq!(result["input_count"], 1);
-        assert!(
-            result["hot_memes"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|value| value["text"] == "666" && value["count"] == 1)
-        );
-    }
-
-    #[test]
-    fn plain_text_extracts_each_non_empty_line() {
-        let records = parse_records("第一条\n\n第二条\n");
+    fn plain_text_and_jsonl_work_but_malformed_json_is_not_counted_as_prose() {
+        assert_eq!(parse_records("求教程\n求链接").unwrap().len(), 2);
         assert_eq!(
-            records,
-            vec![
-                TextRecord::new("第一条", None),
-                TextRecord::new("第二条", None)
-            ]
+            parse_records("{\"text\":\"求教程\"}\n{\"text\":\"求链接\"}")
+                .unwrap()
+                .len(),
+            2
         );
+        assert!(parse_records("{\"text\": broken}").is_err());
+        let result = analyze(&parse_records("求教程\n求教程").unwrap(), 20, 2);
+        assert_eq!(result["demands"][0]["count"], 2);
     }
 }
