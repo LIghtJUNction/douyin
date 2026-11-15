@@ -52,10 +52,13 @@ fn cookie_value<'a>(cookie: Option<&'a str>, names: &[&str]) -> Option<&'a str> 
 }
 
 fn route_public(url: &mut Url) -> Result<bool, String> {
-    if url.path() != "/aweme/v1/user/profile/other/" {
-        return Ok(false);
-    }
-    url.set_path("/aweme/v1/web/user/profile/other/");
+    let browser_path = match url.path() {
+        "/aweme/v1/user/profile/other/" => "/aweme/v1/web/user/profile/other/",
+        "/aweme/v2/comment/list/" => "/aweme/v1/web/comment/list/",
+        "/aweme/v1/comment/list/reply/" => "/aweme/v1/web/comment/list/reply/",
+        _ => return Ok(false),
+    };
+    url.set_path(browser_path);
     if url.host_str() == Some("aweme.snssdk.com") {
         url.set_host(Some("www.douyin.com"))
             .map_err(|_| "网页接口主机无效")?;
@@ -298,12 +301,23 @@ mod tests {
             assert_eq!(url.path(), browser);
         }
 
-        let mut profile =
-            Url::parse("https://aweme.snssdk.com/aweme/v1/user/profile/other/").unwrap();
-        assert!(route_public(&mut profile).unwrap());
-        assert!(!route_protected(&mut profile).unwrap());
-        assert_eq!(profile.host_str(), Some("www.douyin.com"));
-        assert_eq!(profile.path(), "/aweme/v1/web/user/profile/other/");
+        for (native, browser) in [
+            (
+                "/aweme/v1/user/profile/other/",
+                "/aweme/v1/web/user/profile/other/",
+            ),
+            ("/aweme/v2/comment/list/", "/aweme/v1/web/comment/list/"),
+            (
+                "/aweme/v1/comment/list/reply/",
+                "/aweme/v1/web/comment/list/reply/",
+            ),
+        ] {
+            let mut url = Url::parse(&format!("https://aweme.snssdk.com{native}")).unwrap();
+            assert!(route_public(&mut url).unwrap());
+            assert!(!route_protected(&mut url).unwrap());
+            assert_eq!(url.host_str(), Some("www.douyin.com"));
+            assert_eq!(url.path(), browser);
+        }
 
         let mut search = Url::parse("https://aweme.snssdk.com/aweme/v2/search_feed/").unwrap();
         assert!(!route_public(&mut search).unwrap());
