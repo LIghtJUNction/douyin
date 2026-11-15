@@ -34,7 +34,11 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           vcpkg install sqlite3:x64-windows
-          "$env:VCPKG_ROOT\installed\x64-windows\bin" >> $env:GITHUB_PATH
+          $sqlite = "$env:VCPKG_ROOT\installed\x64-windows"
+          if (-not (Test-Path "$sqlite\lib\sqlite3.lib")) { throw "sqlite3.lib is missing" }
+          "SQLITE3_LIB_DIR=$sqlite\lib" >> $env:GITHUB_ENV
+          "SQLITE3_INCLUDE_DIR=$sqlite\include" >> $env:GITHUB_ENV
+          "$sqlite\bin" >> $env:GITHUB_PATH
 
       - name: Check formatting
         run: cargo fmt --check

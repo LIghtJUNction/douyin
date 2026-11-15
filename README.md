@@ -1,6 +1,6 @@
 # douyin-cli
 
-用 Rust 编写的抖音命令行工具：在一个 CLI 中完成公开内容采集、评论导出、媒体下载、账号互动、文本私信、OpenAPI、MCP 接入和离线数据分析，并提供直播配置查询与 OBS 联动能力。
+用 Rust 编写的抖音命令行工具。一个 CLI 即可完成公开内容采集、评论导出、媒体下载、账号互动、文本私信、OpenAPI 调用、MCP 接入和离线数据分析，并支持直播配置查询与 OBS 联动。
 
 [![crates.io](https://img.shields.io/crates/v/douyin-cli.svg)](https://crates.io/crates/douyin-cli)
 [![docs.rs](https://docs.rs/douyin-cli/badge.svg)](https://docs.rs/douyin-cli)
@@ -9,21 +9,22 @@
 
 - 项目地址：https://github.com/LIghtJUNction/douyin
 - 安装包：https://crates.io/crates/douyin-cli
-- 当前版本：`2026.11.15`
+- 当前版本：`2026.11.16`
 - 开发记录：[docs/rebuild.md](docs/rebuild.md)
 
-> 本项目不是抖音官方产品，与抖音或字节跳动没有隶属关系。请只操作自己的账号和已获授权的数据，遵守适用法律、平台规则及内容版权要求。接口和风控策略可能随时变化；命令存在不等于所有线上场景均已验收，具体边界见下文。
+> 本项目并非抖音官方产品，与抖音及字节跳动无任何隶属关系。请仅操作自己的账号和已获授权的数据，并遵守相关法律、平台规则和内容版权要求。接口与风控策略可能随时变化，命令存在并不代表所有线上场景都已验收，具体边界见下文。
 
 ## 项目特点
 
 - **单一 Rust 可执行文件**：日常运行不需要 Python、Node.js 或 Java。
-- **三种独立认证方式**：Android 原生登录态、网页 Cookie、官方 OAuth，互不混用。
-- **多种采集后端**：网页接口、显式 DuckDroid2 签名后端，以及仅供协议研究的手机通道。
-- **不只是只读采集**：支持作品点赞、收藏、分享链接、顶级评论、楼中楼回复和评论赞踩。
-- **原生文本私信**：对接 Aweme 辅助接口与 ByteDance IM protobuf 协议，不是把 REST JSON 请求误当作私信发送。
-- **适合自动化和 AI 工具**：提供官方 OpenAPI 客户端、stdio/HTTP MCP 服务、JSON/JSONL 导出。
-- **下载与分析闭环**：支持视频、图文、封面、标题下载，并可离线统计作品和评论数据。
-- **敏感信息最小化**：登录文件隔离保存，写操作需要确认，CDN 下载不转发登录凭据。
+- **单一 Rust 可执行文件**：日常运行不依赖 Python、Node.js 或 Java。
+- **三种独立认证方式**：Android 原生登录态、网页 Cookie 和官方 OAuth，各自保存，互不混用。
+- **多种采集后端**：网页接口、需显式启用的 DuckDroid2 签名后端，以及仅用于协议研究的手机通道。
+- **不止于只读采集**：支持作品点赞、收藏、分享链接、顶级评论、楼中楼回复和评论赞踩。
+- **原生文本私信**：对接 Aweme 辅助接口与 ByteDance IM protobuf 协议，而不是用 REST JSON 请求冒充私信发送。
+- **便于自动化和接入 AI 工具**：提供官方 OpenAPI 客户端、stdio/HTTP MCP 服务以及 JSON/JSONL 导出。
+- **下载与分析闭环**：支持下载视频、图文、封面和标题，并可离线统计作品与评论数据。
+- **最小化敏感信息暴露**：登录文件隔离保存，写操作须确认，CDN 下载不转发登录凭据。
 
 ## 功能与当前状态
 
@@ -74,6 +75,8 @@ cargo install --path . --locked
 ```powershell
 vcpkg install sqlite3:x64-windows
 $env:VCPKGRS_DYNAMIC = "1"
+$env:SQLITE3_LIB_DIR = "$env:VCPKG_ROOT\installed\x64-windows\lib"
+$env:SQLITE3_INCLUDE_DIR = "$env:VCPKG_ROOT\installed\x64-windows\include"
 $env:PATH = "$env:VCPKG_ROOT\installed\x64-windows\bin;$env:PATH"
 ```
 
@@ -209,7 +212,7 @@ DOUYIN_NATIVE_TRANSPORT=web douyin -t feed -l 20 -p ./downloads
 --download-title  # 导出标题
 ```
 
-用户作品采用增量归档：本次采集更新相同作品并保留历史作品。`-l` 限制的是**本次请求数量**，不是合并后的归档总数。匿名网页话题分页目前可能重复零游标，工具会明确报错而不是生成虚假的完整结果。
+用户作品采用增量归档：本次采集更新相同作品并保留历史作品。`-l` 限制的是**本次请求数量**，不是合并后的归档总数。匿名网页话题分页目前可能反复返回零游标，此时工具会明确报错，而不会生成看似完整的虚假结果。
 
 ### 3. 选择采集传输
 
@@ -307,7 +310,9 @@ douyin social share "作品ID"
 
 评论赞踩的用户动作统一使用 `--action 1/0`，内部映射到 APK 的实际类型：点赞 `1`、取消点赞 `2`、点踩 `4`、取消点踩 `3`。
 
-顶级评论和回复必须使用显式 `--adb-guard`，由已连接 rooted 手机生成当前请求路径所需的 TicketGuard 材料；不会静默依赖手机，也不会把签名材料写入仓库。`share` 只返回链接，不会擅自发送给联系人。作品赞/藏、评论/回复、评论赞/踩和分享链接均已取得真实成功响应；关注命令虽已接线，但尚未完成真实验收：
+发布顶级评论和回复时必须显式加上 `--adb-guard`，由已连接的 rooted 手机生成当前请求所需的 TicketGuard 材料。工具不会静默依赖手机，也不会把签名材料写入仓库。`share` 只返回链接，不会自动发送给任何联系人。
+
+作品赞/藏、评论/回复、评论赞/踩和分享链接均已取得真实成功响应。关注命令虽已接线，但尚未完成真实验收：
 
 ```bash
 douyin social follow --sec-user-id "SEC_UID" --action 1 --yes
@@ -448,7 +453,9 @@ douyin live create --params-file ./create-room.json --yes
 douyin live leave --room-id "房间ID" --yes
 ```
 
-`create` 只接受从目标 APK 恢复的 FieldMap 键，不猜填参数。权限、预览和网页公开房间查询已有相应验收；**真实创建直播间、持续推流、心跳和结束的完整安卓开播流程尚未验收**。直播配置返回成功不等于已经开播，也不证明服务端把请求识别为 Android 手机直播。
+`create` 只接受从目标 APK 中恢复的 FieldMap 键，不会猜测或补全参数。
+
+权限、预览和网页公开房间查询已有相应验收，但**创建直播间、持续推流、心跳和结束的完整安卓开播流程尚未验收**。直播配置查询成功并不表示已经开播，也不能证明服务端会把请求识别为 Android 手机直播。
 
 OBS 28+ 自带 WebSocket，在 OBS“工具”菜单中启用。默认连接本机 `4455` 端口：
 
@@ -529,7 +536,7 @@ cargo package --locked --offline
 cargo run --locked --offline -- --help
 ```
 
-当前发布版本验证结果为 **149 项通过、1 项真机测试忽略**，并完成严格 Clippy、release 构建和发布包独立编译验证。本地测试通过不等于线上接口或真机流程全部通过。
+当前发布版本的验证结果为 **149 项通过、1 项真机测试被忽略**，同时通过了严格 Clippy 检查、release 构建和发布包独立编译验证。本地测试通过并不代表线上接口或真机流程全部可用。
 
 修改手机通道脚本时还需运行：
 
