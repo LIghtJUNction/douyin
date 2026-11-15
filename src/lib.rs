@@ -13,6 +13,7 @@ pub mod insights;
 pub mod io;
 pub mod live;
 pub mod mcp;
+pub mod metasec;
 mod native_auth;
 pub mod net;
 pub mod oauth;

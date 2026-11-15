@@ -34,7 +34,7 @@ Require Rust 1.100+ using `rust-toolchain.toml`. The deliberately deleted implem
 
 ## Route Authentication
 
-Use `douyin auth --adb` for the current native crawl/comment clients. Import actual login state and corroborated device/install IDs from the selected rooted Android phone. Native login (`session.json`), website Cookie (`cookie.json`), and official OAuth (`oauth.json`) are separate. Use OAuth for `douyin api` and its MCP tools; `native_me` and `native_live_permissions` use native login and offline tools need no auth. Media downloads must not forward authentication credentials to CDN hosts.
+Use `douyin auth --adb` for the current native crawl/comment clients. Import actual login state and corroborated device/install IDs from the selected rooted Android phone. The supported Token snapshot also carries its nonempty server-issued token_tlb_tag; treat it as sensitive and require Token/tag stability together. Older saved sessions without this optional field remain valid. The nonempty-tag branch passed isolated real-device import and direct auth status with ADB shadowed by a failing stub; no ADB invocation occurred. An earlier cold-start import rejected an unsupported Provider row shape; the cause is still unresolved, so do not claim startup reliability. Live permissions with the new nonempty-tag branch remain pending. Do not persist track_data or signing keys. Native login (`session.json`), website Cookie (`cookie.json`), and official OAuth (`oauth.json`) are separate. Use OAuth for `douyin api` and its MCP tools; `native_me` and `native_live_permissions` use native login and offline tools need no auth. Media downloads must not forward authentication credentials to CDN hosts.
 
 ```bash
 douyin device
@@ -192,3 +192,7 @@ PermissionResult.broadcastConfig is scheduling configuration (scheduled_* fields
 
 
 `live info` summaries expose sdk_stream_type using inspected 40.8.0 Room.getStreamType precedence: room_layout=1 or layout=ROOM_TYPE_OFFICIAL_ACTIVITY (initialized to 1) -> media, then live_type_screenshot, live_type_third_party, live_type_audio, otherwise video. Raw response classification requires the needed fields with supported types; absent metadata must not default to video. This client SDK classification alone never proves Android broadcaster identity. createRoomWithPb returns ExtraResponse<Room,RoomCreateBlockExtra>; account/stream/room validation and blocker handling remain required before any real creation can be accepted. Never print/persist blocker tickets, unique IDs or raw challenge payloads in public summaries.
+
+## Metasec configuration fixtures
+
+`metasec::decode_constant` handles public APK constants; `Configuration` only encodes the pinned u2 model. Neither initializes the SDK or signs requests. Preserve all 17 positions, Java trim semantics, integer strings and observed map iteration order. Do not reconstruct Java HashMap order by sorting. The fake config fixture and its exact configured JSON text were produced by the real APK Java serializer in an isolated app_process, with s4 replaced only to avoid native initialization. The helper pins the APK hash and never operates on live account objects. See assets/metasec-fixtures/README.md. These fixtures do not establish runtime context readiness or server acceptance.

@@ -1,5 +1,8 @@
 //! Software ticket-guard primitives and client-data codec. Account binding,
 //! mode selection, timestamp derivation and server acceptance remain separate.
+pub mod policy;
+pub mod settings;
+
 use base64::{Engine, engine::general_purpose::STANDARD};
 use ring::{
     rand::SystemRandom,

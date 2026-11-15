@@ -94,3 +94,10 @@ StartLiveViewModel.EA 是短转交方法，创建 helper 最终把传入 HashMap
 官方 apkanalyzer 注解确认 createRoom 返回 Observable<0b14<Room>>，而 createRoomWithPb 返回 Observable<ExtraResponse<Room,RoomCreateBlockExtra>>，两者都使用同一路径和 FormUrlEncoded FieldMap；不能从方法名字推定响应线上编码。RoomCreateBlockExtra 含实名验证、手机号绑定、直播协议/答题、风险级别等字段，也含 ticket、uniqueId 与阻断详情；这些不是房间成功数据，不得原样公开。成功回调读取 data.Room 的 roomId 和 streamIdStr，后者 getter 直接读取 stream_id_str 对应字段。证据 `ev_8ec3cc1098555e0db2720fa8354debca0133eda9321a469fa0a1e2c2afab6ddc`、`ev_38e7e39ff1a8411d851835fb5793dea42f4a11f326376ade798bf0d5055d8645`、`ev_39f5bbf350b6375772f05e809c7463dad40c58b8c6a01615a975d77f7629b414`。尚未收到真实创建响应。
 
 Room.getStreamType 先判断 room_layout=1，再判断 layout=ROOM_TYPE_OFFICIAL_ACTIVITY（静态初始化值为 1），两者都返回 MEDIA；随后依次判断 live_type_screenshot、live_type_third_party、live_type_audio，最后返回 VIDEO。字段名已用 SerializedName 注解核对。证据 `ev_387d8a005ea295898ee846c2c3b880cf6ea6b23033c548c9bf043ffe53b0e3e8`、`ev_47f58dd83dabf63a1bae3c3a6d21c0e31143bbd3b3f391dc6797de786d8b13a4`。房间摘要已加入 sdk_stream_type；对于字段不全或类型不明的原始 JSON 保留 null，不照搬 Java 默认字段值把未知房间误判为视频。此分类仅代表客户端 SDK 的房间类型规则，不证明服务端把发送端认作安卓手机。
+
+
+## 推流地址与 OBS 输入格式
+
+classes53.dex 的 StreamUrl 字段注解分别包含 rtmp_push_url、rtmps_push_url、push_urls、rtmp_push_url_params、rtmp_pull_url 和 flv_pull_url。它们是不同字段，不能把推流参数或拉流地址当作推流主地址。类定位证据 ev_1df43a08a88da0029e9c2501da12b410694d491ae1e82756fda2f217b5ec09ab；字段注解由 apkanalyzer 对原 APK 核对。
+
+OBS configure-push 输入现允许单独的 rtmp_push_url 字符串，限定 RTMP/RTMPS，并保持原始地址字节：仅在查询串之前寻找最后一个路径分隔符；不解码 %2F，不按签名内的斜杠拆分。空流名称、首尾空白、非法协议及与 server/key 混用均拒绝。只适配明确提供的地址，不自动选择多地址列表，不接受整个未经验证的房间响应，不声明已经取得安卓开播权限。

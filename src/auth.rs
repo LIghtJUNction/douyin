@@ -34,22 +34,10 @@ pub fn login_adb(serial: Option<&str>) -> Result<Value, String> {
     if unlocked.trim_ascii() == b"false" {
         return Err("应用数据尚未解锁，请先解锁手机一次再运行 auth --adb".into());
     }
-    let prefs = parse_preferences(&read(&adb, "shared_prefs/applog_stats.xml")?)?;
-    let device_id = prefs
-        .get("device_id")
-        .filter(|v| valid_id(v))
-        .ok_or("应用缺少有效 device_id")?;
-    let keva = read(&adb, "files/keva/repo/applog_stats/applog_stats.blk")?;
-    // Newer apps migrate SharedPreferences to Keva. A legacy XML value alone
-    // is insufficient: require corroboration in the current app repository.
-    if !contains_id(&keva, device_id) {
-        return Err("旧设备标识与当前应用记录不一致，拒绝导入".into());
-    }
     let package = String::from_utf8(adb.shell("dumpsys package com.ss.android.ugc.aweme", false)?)
         .map_err(|_| "应用版本编码无效")?;
     let metadata = adb.package_metadata()?;
     validate_package_metadata(&metadata, &package)?;
-    device["deviceId"] = json!(device_id);
     for key in [
         "versionName",
         "versionCode",
@@ -66,6 +54,26 @@ pub fn login_adb(serial: Option<&str>) -> Result<Value, String> {
     let mut session =
         json!({"schema":1,"source":"adb","device":device,"cookies":[],"userAgent":ua});
     import_transport_metadata(&metadata, &mut session)?;
+    // Initialize the native SDK before taking either identity snapshot. Opening
+    // the app later can refresh installation metadata after we already read it.
+    if crate::native_auth::supported(&session) {
+        adb.shell(
+            "am start -W -n com.ss.android.ugc.aweme/com.ss.android.ugc.aweme.splash.SplashActivity",
+            false,
+        )?;
+    }
+    let prefs = parse_preferences(&read(&adb, "shared_prefs/applog_stats.xml")?)?;
+    let device_id = prefs
+        .get("device_id")
+        .filter(|v| valid_id(v))
+        .ok_or("应用缺少有效 device_id")?;
+    let keva = read(&adb, "files/keva/repo/applog_stats/applog_stats.blk")?;
+    // Newer apps migrate SharedPreferences to Keva. A legacy XML value alone
+    // is insufficient: require corroboration in the current app repository.
+    if !contains_id(&keva, device_id) {
+        return Err("旧设备标识与当前应用记录不一致，拒绝导入".into());
+    }
+    session["device"]["deviceId"] = json!(device_id);
     if crate::native_auth::supported(&session) {
         let install_id = corroborated_install_id(&prefs, &keva)?;
         session["device"]["installId"] = json!(install_id);

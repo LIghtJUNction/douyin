@@ -38,7 +38,12 @@ struct ObsArgs {
 enum ObsCommand {
     /// 查询 OBS 推流状态，不读取推流密钥
     Status,
-    /// 将已有直播间的 server/key JSON 配置到 OBS；默认不开始推流
+    /// 查询媒体源播放状态，不读取拉流地址
+    SourceStatus {
+        #[arg(long, default_value = "douyin-live")]
+        name: String,
+    },
+    /// 将已有直播间的推流 JSON 配置到 OBS；默认不开始推流
     ConfigurePush {
         #[arg(long)]
         stream_file: String,
@@ -81,7 +86,7 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
         LiveCommand::Obs(args) => args,
     };
     let confirmed = match &args.command {
-        ObsCommand::Status => true,
+        ObsCommand::Status | ObsCommand::SourceStatus { .. } => true,
         ObsCommand::ConfigurePush { yes, .. }
         | ObsCommand::AddSource { yes, .. }
         | ObsCommand::Stop { yes } => *yes,
@@ -110,6 +115,9 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
             validate_url(text.trim(), &["https", "http", "rtmp", "rtmps"])?;
             json!({"is_local_file":false,"input":text.trim(),"restart_on_activate":true,
                 "close_when_inactive":true,"reconnect_delay_sec":2})
+        }
+        ObsCommand::SourceStatus { name } if name.trim().is_empty() => {
+            return Err("OBS 媒体源名称不能为空".into());
         }
         _ => Value::Null,
     };
@@ -140,6 +148,16 @@ async fn execute(args: ObsArgs, settings: Value) -> Result<Value, String> {
             json!({"active":status.active,"reconnecting":status.reconnecting,
             "bytes":status.bytes,"frames":status.total_frames,"skipped_frames":status.skipped_frames}),
         ),
+        ObsCommand::SourceStatus { name } => {
+            let media = client
+                .media_inputs()
+                .status(obws::requests::inputs::InputId::Name(&name))
+                .await
+                .map_err(|_| "无法查询 OBS 媒体源播放状态，请检查名称和媒体源类型")?;
+            Ok(json!({"name":name,"state":media.state,
+                "duration_ms":media.duration.map(|v| v.whole_milliseconds()),
+                "cursor_ms":media.cursor.map(|v| v.whole_milliseconds())}))
+        }
         ObsCommand::ConfigurePush { start, .. } => {
             if status.active {
                 return Err("OBS 正在推流，不能替换推流目标".into());
@@ -218,6 +236,25 @@ fn validate_url(raw: &str, schemes: &[&str]) -> Result<(), String> {
 
 fn push_settings(text: &str) -> Result<Value, String> {
     let value: Value = serde_json::from_str(text).map_err(|_| "推流配置不是合法 JSON")?;
+    if let Some(raw) = value.get("rtmp_push_url") {
+        if value.get("server").is_some() || value.get("key").is_some() {
+            return Err("完整推流地址不能与 server/key 混用".into());
+        }
+        let raw = raw.as_str().ok_or("完整推流地址必须是字符串")?;
+        validate_url(raw, &["rtmp", "rtmps"])?;
+        if raw.trim() != raw {
+            return Err("完整推流地址不能包含首尾空白".into());
+        }
+        // Parse only for validation. Split the original bytes before its query:
+        // decoding %2F or splitting on a slash inside a signature changes the key.
+        let path_end = raw.find('?').unwrap_or(raw.len());
+        let authority_start = raw.find("://").ok_or("完整推流地址格式无效")? + 3;
+        let split = raw[..path_end]
+            .rfind('/')
+            .filter(|index| *index >= authority_start && *index + 1 < path_end)
+            .ok_or("完整推流地址缺少流名称")?;
+        return Ok(json!({"server":&raw[..=split],"key":&raw[split + 1..],"use_auth":false}));
+    }
     let server = value["server"]
         .as_str()
         .filter(|v| !v.is_empty())
@@ -403,6 +440,35 @@ mod tests {
         assert!(!summary.contains("private"));
         assert!(room_summary(&response, "124").is_err());
         assert!(room_summary(&json!({"data":{}}), "123").is_err());
+    }
+
+    #[test]
+    fn full_push_url_keeps_encoded_key_and_query_bytes_intact() {
+        let url = "rtmps://push.example:443/live/opaque%2Fkey?sig=a/b%2Bc==&ts=123";
+        let settings = push_settings(&json!({"rtmp_push_url":url}).to_string()).unwrap();
+        assert_eq!(settings["server"], "rtmps://push.example:443/live/");
+        assert_eq!(settings["key"], "opaque%2Fkey?sig=a/b%2Bc==&ts=123");
+        assert_eq!(
+            format!(
+                "{}{}",
+                settings["server"].as_str().unwrap(),
+                settings["key"].as_str().unwrap()
+            ),
+            url
+        );
+        for bad in [
+            json!({"rtmp_push_url":"rtmp://push.example/live/?private-secret=a/b"}),
+            json!({"rtmp_push_url":"rtmp://push.example?private-secret=a/b"}),
+            json!({"rtmp_push_url":" rtmp://push.example/live/private-secret"}),
+            json!({"rtmp_push_url":"rtmp://push.example/live/private-secret", "key":"conflict"}),
+            json!({"rtmp_push_url":null}),
+        ] {
+            assert!(
+                !push_settings(&bad.to_string())
+                    .unwrap_err()
+                    .contains("private-secret")
+            );
+        }
     }
 
     #[test]

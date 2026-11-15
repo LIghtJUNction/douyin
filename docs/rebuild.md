@@ -164,3 +164,54 @@
 
 
 - 创建提交调用链继续核对到 ExtraResponse<Room,RoomCreateBlockExtra> 成功回调及 SDK Room.getStreamType。`live info` 摘要新增 sdk_stream_type，按已核对的媒体布局、录屏、第三方、音频、视频优先级分类；必要字段缺失时保持 null，不把不完整 JSON 当作手机视频房间。新增优先级、字段缺失和错误类型测试，共 85 项测试与 Clippy 通过；release 构建通过。该改动未新增真实房间联网验收，不能视为安卓开播证明。
+
+
+- 完整软件 guard 的后续对照仍未验收：补齐已核对 SDK 头和候选 UA，Passport 无 guard 返回 HTTP 403/空响应，正确 HMAC 与故意改错 HMAC 均返回 HTTP 200、error_code=13。搜索在原主机与此前观察到的最终主机返回 status_code=2483；补 Build.DISPLAY 和匹配 Token 公钥的缓存静态证明仍未成功。这些结果不能证明服务端接受 HMAC，也不应将 2483 擅自解释为特定失败原因。没有把实验头设为默认，也没有持久化私钥。
+- APK 静态证明路径已核对：get_tee_static_sign_result 读取缓存；响应 Cursor 还有 exception_message 列，不能把整列尾部当成 JSON。静态证明头与主请求头使用独立列表，仅在 X.1Yoy.LJJJLIIL 开关开启时合并。证据：ev_d3d0fd8d6b580e82f4f8cf465b29ab21febb293f1cecd378fe3ec37929274e41、ev_20f4323d918abef100b9ce6d3e01867e0b66fdd3e7a463c3298b97aa8291579d、ev_0bf2957c3a0a464b6375e6812f4d98d74597b91af2bfb455bd93b2ba764dbbe8。源码和实验均不支持无条件启用这些头。
+- Token 头工厂还会在 Token 对象 LJFF 非空时添加 token-tlb-tag，并按上下文添加 bd-ticket-guard-request-tlb-group（ev_f539c383ab1ad9d0f741d2eba5af197011719b47c6f81e78ee5ce97b8698e9f9）。该轮生产导入尚未包含这些字段；当时尚未完成独立请求对照，不能宣称已完整复现工厂或最终网络上下文。
+- 后续 Token Provider 明确返回 is_login=0，用户确认手机已退出并重新登录。没有调用退出登录接口；退出原因未确定，也不能排除诊断请求触发服务端安全校验的可能。暂停 guard 请求实验，先验证普通导入；本轮未将真实退出当作初始化延迟修改导入逻辑。真实凭据和完整响应均未写入公开记录。
+
+- 用户重新登录后，使用自动清理的隔离目录再次执行 auth --adb 成功；随后 PATH=/nonexistent 的 auth status 也成功。没有覆盖默认配置，没有恢复 guard 实验；该结果只证明重新登录后的普通导入和独立状态验证。
+
+- 修正原生导入顺序：受支持版本在读取 XML/Keva 设备及安装标识之前正常打开应用，避免先取快照、再启动 SDK 导致初始化更新后混用标识。Token 导入不再重复打开应用；保存前的标识与 Token 复核保持不变。此调整不把 is_login=0 当成有效登录，也不增加签名试验。
+- 实机顺序验收：临时 ADB 包装器在正常启动成功前拒绝任何 applog_stats.xml 读取；新导入成功，随后 PATH=/nonexistent 的 auth status 成功。临时配置与包装器自动清理，默认配置未改变。85 项本地测试、严格 Clippy 和打包编译通过。
+
+- 离线继续核对 TLB 上下文：X.1Ypq.LJJJJI 在响应头分支读取 token-tlb-tag，将值放入新 Token 对象的第五个构造参数；更新 attest 证明或登录状态的分支保留旧对象 LJFF，而不是生成新标签（ev_5aabe3a787f0e78ab2bbf6b14ef3c3397205583ea06fb6629618a32287515ff4）。X.1Ypr.LJIIIZ 从 Provider 的 token_tlb_tag 列恢复该参数，空值按空字符串处理（ev_790ed74bd022e10a34541f790970b2f3c58db7a28a94dd3cfdea8193e7df83f8）。不能用设备标识、签名摘要或自行生成字符串代替服务端标签。
+- request-tlb-group 是另一项配置：X.1Yoy.LJJJJJ 默认空字符串（ev_151738749874b6a838eee93b97edd981742e27a35faa4a78b066355ee471fb25），加载键 bd_ticket_guard_request_tlb_group（ev_f7833db7a4f98274b452205d3e3bdd2771d8b26e63db54bf0c65666c46ddda46）；请求头工厂及设置更新请求均仅在配置非空时发送（ev_2ea423e08044f580347dac7c2f9ed868c811c35019635c19473ba9e0e2a49f01）。它与服务端 Token 标签的来源和生命周期不同，不应相互推导或固定为猜测值。本轮只读本地 APK，没有访问手机、导出材料或发出联网实验请求；生产头与会话格式未改变。
+
+- OBS 新增只读 source-status --name，返回媒体源状态、duration_ms 和 cursor_ms，不读取源设置或拉流地址，不要求 --yes。隔离 OBS 33.0.1 使用本机 HTTP 测试视频，实际 add-source 成功；source-status 返回 OBS_MEDIA_STATE_PLAYING、duration_ms=30000、cursor_ms=400，缺失媒体源查询被拒绝。未启动推流，未访问手机或抖音直播接口；隔离 OBS、HTTP 服务和临时配置已清理。此验收不证明真实抖音直播画面或安卓身份开播。
+
+- OBS configure-push 增加完整 rtmp_push_url 输入，避免手动拆分破坏签名。边界测试覆盖编码斜杠、查询串内斜杠、空流名称、空值和混用配置；86 项测试通过。隔离 OBS 33.0.1 实际配置后，直接读取其隔离 service.json 核对 server+key 与公开测试地址逐字节一致，且推流保持空闲。本地媒体播放与 source-status 复测通过；没有连接真实推流主机、访问手机或创建直播间。
+
+- 原生 Token 导入现解析配套 token_tlb_tag：通过 JSON 解码器确认 track_data 结束边界，仅保留 Token 和非空标签，不保存跟踪对象或证明。两次稳定快照及保存前复核同时比较 Token 与标签；NULL/空标签不发送，旧版无标签会话仍兼容。标签请求头标记 sensitive，沿用 Token 的主机范围及固定直播权限端点例外，没有启用 request-tlb-group 或软件 guard 默认头。
+- 新增标签轮换、元数据嵌套/边界、异常尾部、敏感标记和主机范围测试，共 88 项测试通过。实机隔离导入在发现设备阶段报告没有已授权 ADB 设备，尚未发出新导入的账号请求；新增非空标签的在线验收待手机恢复，不将以前无标签认证结果当作本轮证明。默认配置未修改。
+
+- 新增 guard::policy 路径规则组件，依据 X.1Yoy.LIZIZ/LJI/LJII 及 TokenFactory 调用链，独立输出 TEE、REE、HMAC 规则请求，不根据本机可用密钥做降级。use_tee_ree_config 开启时分开匹配 TEE/REE，关闭时旧路径命中同时请求二者；HMAC 另受 enable_symmetric_encryption 控制，并与 REE 共用 ree_force_sign_paths。强制精确路径优先，其次排除精确/前缀，最后包含精确/前缀；匹配保持大小写和原始编码。组件要求调用方明确提供有效配置，没有接入生产请求默认签名。
+- 路径类型选择器证据 ev_f63e8306902db9655492d4121efa14fdeb0637ca7c0c39a79ab9601299771456；规则优先级 ev_66f86ba082851bc26700f420200278a47807b1f78caa6b22efc8225cfc042962；调用及字段映射 ev_e59b420fcc56f52addd34e8ca61fb2ece3ab515c146d30c73fe08a04813231d9、ev_3dcb44b5fe14b9eeee73cd0a768e41e1dee32e4f8c38a2b4c2f3cee73489e700、ev_fff108084a439c1040e421fb348ee9e821b70723d6f7d312df2bae48dc814e4c。新增矩阵、强制/排除冲突、HMAC 开关和字面匹配测试。有效 SDK 配置取得、主机/账号门槛、校准时间与最终签名执行仍未接通；不是完整模式选择或服务端验收。
+- 配置加载入口还读取账号 SDK 设置中的 token_guard_config，并处理 overrides（ev_f7833db7a4f98274b452205d3e3bdd2771d8b26e63db54bf0c65666c46ddda46）。不能直接把缺省 APK 常量或未处理覆盖的配置当作当前生效规则。新增组件后 91 项本地测试、严格 Clippy 通过。
+
+- 继续核对有效配置的组合：X.1YZm.LJII 在缺少下发数组时恢复构造器缺省集合；显式 [] 则保持空集合。LIZLLL 在没有覆盖数组时合并附加集合与下发/缺省集合，有覆盖数组时只使用覆盖集合；显式空覆盖可清空全部。证据 ev_ffc57e30600673a23399928d258634c1d82c1777efeb7cefbf6a72037a6bd62f、ev_a9fba0f71c91676c659d12612a603067e86a52639811ecb61e22de6983bdea9b、ev_150da478cf456f8b31031f698e5243b2c0db2b0bfe45872bf7a623412077ad68。数组项通过 JSONArray.optString 读取并丢弃空字符串；尚未在 Rust 中假定其非字符串转换语义。
+- overrides 不能统一递归合并到 token_guard_config：当前加载器对 TEE/REE 的普通包含和排除数组直接调用 LJII；对 symmetric_encryption_prefix_path 使用支持覆盖的 LJI；ree_force_sign_paths 的 LJI 调用甚至把普通下发对象参数设为 null，仅传覆盖对象。标量包装器另有两级显式值及构造器缺省值的选择顺序，仍需继续核对各级赋值。路径组件只接收已经解析的有效集合，不擅自实现通用 JSON 覆盖器。
+- 配置存储入口已定位：X.1Yov.LIZJ 优先返回进程中的 JSONObject 缓存；缺少缓存时，通过 KevaSpAopHook 打开 account_sdk_settings_sp，读取 account_sdk_settings 字符串并解析（ev_d0241054a88571a51a030e079c59fedcf691ff8ffda6aceed47cd8df09f13242）。磁盘旧 XML 不足以证明当前内存设置，手机恢复后仍须校验实际存储/缓存的一致性。此轮没有访问应用数据或发请求。
+- 布尔层级随后核对完成：LJ 把存在且非 null 的 overrides 值放入最高优先级 LIZJ；否则清除该覆盖。基础 JSON 经 optBoolean(key, 构造器缺省值) 更新 LIZ；LIZ() 在无最高覆盖时先取进程内 LIZIZ 显式值，再取基础 LIZ。不能简单写成 override.as_bool().or(base)，因为 SDK 对无效但非 null 的覆盖会采用构造器缺省值，且仍保留覆盖优先级。证据 ev_fddd5c1811fbc0a5bfbd660fd3359915d7990431247e9513a3aaf899ee2749c0、ev_ac05fa5f0c880b66c7359cb4e53e54d181184d1b513782948d3d408c93929ef3。尚未声称已复现 Android JSON 类型转换。
+
+- 新增 guard::settings::BooleanSetting，显式传入已核对的 SDK 构造器缺省值，保留覆盖值 > 进程内显式值 > 基础值的优先级。基础对象缺失保留旧基础值；对象存在但键缺失恢复缺省；覆盖缺失/null 清除旧覆盖，无效但非 null 的覆盖仍以最高优先级采用构造器缺省。构造器对应关系由 ev_f761dff7c7d10c44d395e4aac72c87b3a17d23c66d064f4ec01deb661eabb0e0 补证。
+- 布尔转换对照 Android 16 libcore JSON.toBoolean：布尔值或 String.equalsIgnoreCase 的 true/false，既不 trim，也不把数字当真值。使用公开固定输入在主机 Java 核对大小写、空格、数字字符串及 Unicode long-s 边界；不是手机端执行验收。来源 https://android.googlesource.com/platform/libcore/+/refs/heads/android16-release/json/src/main/java/org/json/JSON.java 。新增转换、覆盖优先级、对象/键缺失和清除旧覆盖测试，共 94 项本地测试通过。有效 SDK 配置取得、路径数组解析和最终请求签名仍未接通，未扩大生产签名行为。
+
+- 新增 ArraySetting，对应已核对的 X.1YZm 配置层：缺少下发数组恢复构造器缺省；显式 [] 清空基础层但保留附加集合；覆盖数组替代所有层，空覆盖清空全部，移除覆盖恢复当前基础/附加集合。只在 SDK 支持覆盖的加载位置调用覆盖更新；不通用合并所有 JSON 字段。输入是已经完成 SDK optString 转换的字符串数组，原始 JSON 非字符串转换仍待接通。
+- 数组层去重并保留非空规则的空白、大小写与百分号编码，输出排序仅用于确定性；路径判断仍是集合成员/字面前缀匹配。新增缺省/下发/空覆盖/撤销覆盖、去重与编码保留测试，并将布尔和数组结果送入 GuardPolicy 做组合验证：HMAC 开关和路径变化不会抹去已有 TEE 请求。98 项本地测试通过。这不是实时配置导入或完整请求签名的验收。
+
+- 离线定位到 Cronet addSecurityFactor → 应用提供者 → metasec 原生桥的独立链路，输入为 URL 与处理后的请求头，并非 frameSign 的调用契约。两个桥的原生命令号、头名称归一化及首值提取已核对，具体原生输出和算法尚未验收；见 [安卓网络安全因子](android-network-signing.md)。本轮没有连接手机或调用原生桥对真实账号签名，ADB 当前没有已授权设备。
+
+- 网络安全因子初始化继续定位到 b3 Java 分发入口的 0x2000001 → a3.LIZIZ → h5.LIZ(long)，后者保存上下文并注册 g5；另一分支操作 l2。已识别公开 APK 中的 AArch64 metasec 库及 JNI_OnLoad，但未复现上下文初始化、注册方法和原生算法，也未保存或复用真实句柄。证据已补入安卓网络安全因子记录；没有访问手机或发签名请求。
+
+- JNI_OnLoad 原生静态调查补齐一处间接调用参数计算：XOR 辅助函数解出 5256，首参数地址算得 0x2a8eec，传给 0x29e764。尚未找到 JNI 注册表，不把该地址当作已识别的签名函数或虚拟机入口；未执行或修改 APK 原生库。细节及证据见安卓网络安全因子记录。
+
+- 有界离线 AArch64 仿真已在虚构单线程/Java 环境中通过 17 项库初始化，并捕获 RegisterNatives 参数：ms/bd/c/k3.a，描述符 (IIJLjava/lang/String;Ljava/lang/Object;)Ljava/lang/Object;，原生 RVA 0x29b2b4。捕获后立即停止；尚未完成 JNI_OnLoad、执行具体签名命令或验证服务端。原库未打补丁，探针不使用账号材料、不执行宿主系统调用；见安卓网络安全因子记录中的输入哈希与边界。
+
+- 恢复后重新拉取安装包，SHA-256 与原先固定 40.8.0 APK 一致。/tmp/re 下的历史研究临时文件已消失；后续公开 APK/DEX/ELF 和新研究账本放入 Git 忽略的 target/research/metasec，不将临时原型存在视为可复现证据。历史离线仿真记录保留为历史结果，当前未恢复其脚本。
+- 新增非空 Token 标签的实机验收：首次隔离导入因不支持的 Provider 行格式失败，随后仅检查输出结构确认一行及预期字段，未打印 Token/签名/跟踪内容；第二次导入通过，保存会话包含非空 tokenTlbTag，权限 0600。随后将 adb 替换为会记录调用并失败的临时 shim，显式 direct 传输的 auth status 验证成功且 shim 未被调用。隔离会话自动删除，默认配置未改。首次格式失败原因仍待定位；不据此次成功宣称冷启动稳定，或证明搜索、直播签名已通过。
+
+- 新增 Rust metasec::decode_constant，按公开 APK 的常量掩码及 7 个历史原生样本重建零整数/long 参数的常量 payload 变换；测试覆盖跨十字节周期与非法输入，100 项本地测试通过。此模块未接入在线请求，也不提供上下文初始化或签名。配置 builder 的实际引用传递、appID、动态 Map、tk_key 及模式选择已继续核对；SDK 版本字符串仅为静态推导，原生复核待完成。
+
+- 新增 Metasec 配置编码器及公开假数据实机 Java 序列化对照。默认 17 项数组与配置样本 JSON 字节均匹配，覆盖 Java trim、键/值类型、整型边界和转义；102 项测试通过。fixture 使用独立 app_process、固定 APK 哈希及版本占位类，只执行实际 APK 的纯 Java 编码器，没有调用原生 SDK 初始化、账号接口或直播写操作，临时 DEX 已清理。该编码器不代表已获得运行时签名上下文。

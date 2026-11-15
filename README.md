@@ -10,7 +10,7 @@
 
 - `auth --adb` 导入原生 Token，核对账号、设备 ID、安装 ID 和应用版本；导入过程中标识变化就拒绝保存。
 - 导入后断开手机、不带 WebView Cookie，账号验证、个人资料、关注列表和直播配置查询都已实测通过；直播配置查询也跑过实际 MCP 调用。
-- 本地 85 项 Rust 测试、Clippy、release 构建和打包校验通过。OBS 目前只验过本地联动，真实推流和直播画面还没验收。
+- 本地 102 项 Rust 测试、Clippy、release 构建和打包校验通过。OBS 目前只验过本地联动，真实推流和直播画面还没验收。
 
 搜索、完整签名、手机身份开播，以及手机端其余功能还在做。下面写的是当前源码的用法，不能把它当成已发布版本的功能清单。
 
@@ -39,7 +39,7 @@ douyin auth --adb
 
 读取手机里的抖音登录态，同时核对应用的设备 ID、安装 ID 和版本信息。API、APK 和更新版本码分别从已安装应用读取。服务端确认账号后才保存。
 
-抖音 40.8.0 优先导入原生 Token，不依赖 WebView Cookie 确认账号。导入后，`auth status` 和基础请求可以脱离手机运行。其他版本保留已有的 Cookie 登录方式。
+抖音 40.8.0 优先导入原生 Token，同时保留服务端给出的非空 Token 标签，不依赖 WebView Cookie 确认账号。带标签导入和屏蔽 ADB 后的账号验证已实测通过。导入后，`auth status` 和基础请求可以脱离手机运行。其他版本保留已有的 Cookie 登录方式。
 
 连了多台手机就指定一台：
 
@@ -139,14 +139,15 @@ OBS 28+ 自带 WebSocket，在 OBS 的工具菜单里启用。默认连接本机
 douyin live obs status
 douyin live obs configure-push --stream-file ./private-stream.json --yes
 douyin live obs add-source --url-file ./private-pull-url.txt --scene "场景名" --yes
+douyin live obs source-status --name "douyin-live"
 douyin live obs stop --yes
 ```
 
-推流配置文件是 `{"server":"rtmps://推流主机/路径/","key":"推流密钥"}`。拉流文件只放完整的直播播放地址。文件里有私密地址和密钥，自己保管，不要提交到仓库。
+推流配置文件是 `{"server":"rtmps://推流主机/路径/","key":"推流密钥"}`。也支持 `{"rtmp_push_url":"完整 RTMP 或 RTMPS 推流地址"}`，会按原始字节拆分，保留签名参数；两种格式不能混用。拉流文件只放完整的直播播放地址。文件里有私密地址和密钥，自己保管，不要提交到仓库。
 
-`configure-push` 默认只配置，增加 `--start` 才启动 OBS 推流；已经推流时拒绝替换目标。`add-source` 在指定场景新建媒体源，重名会报错。`stop` 停止 OBS 推流，抖音直播间的结束流程还要单独实现。
+`configure-push` 默认只配置，增加 `--start` 才启动 OBS 推流；已经推流时拒绝替换目标。`add-source` 在指定场景新建媒体源，重名会报错。`source-status` 只读查询媒体源的播放状态和进度，创建成功不代表已经解码出画面。`stop` 停止 OBS 推流，抖音直播间的结束流程还要单独实现。
 
-这部分已用隔离的 OBS 33.0.1 验证连接、密码认证、配置目标但不启动、创建媒体源和空闲停止。尚未验证真实直播画面和推流。安卓身份开播、独立签名、自动取得推拉流地址仍在开发；目前需要已有地址，不能算手机端开播已经实现。
+这部分已用隔离的 OBS 33.0.1 验证连接、密码认证、配置目标但不启动、创建媒体源和空闲停止。新增 `source-status` 已用本地测试视频确认返回 PLAYING、时长和播放进度；查询不存在的源会报错。尚未验证真实抖音直播画面和推流。安卓身份开播、独立签名、自动取得推拉流地址仍在开发；目前需要已有地址，不能算手机端开播已经实现。
 
 ## 下载媒体链接
 

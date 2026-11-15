@@ -52,6 +52,9 @@ pub(crate) fn validate(session: &Value) -> Result<(), String> {
         return Err("原生 Token 编码无效".into());
     }
     header_text(login, "userAgent", 4096)?;
+    if login.get("tokenTlbTag").is_some() && !header_text(login, "tokenTlbTag", 16384)?.is_ascii() {
+        return Err("原生 Token 标签编码无效".into());
+    }
     Ok(())
 }
 
@@ -69,6 +72,13 @@ fn credential_headers(login: &Value) -> Result<HeaderMap, String> {
             value.set_sensitive(true);
         }
         headers.insert(name, value);
+    }
+    if login.get("tokenTlbTag").is_some() {
+        let mut tag = header_text(login, "tokenTlbTag", 16384)?
+            .parse::<reqwest::header::HeaderValue>()
+            .map_err(|_| "原生 Token 标签请求头格式无效")?;
+        tag.set_sensitive(true);
+        headers.insert("token-tlb-tag", tag);
     }
     Ok(headers)
 }
@@ -103,7 +113,20 @@ pub(crate) fn user_agent<'a>(session: &'a Value, host: &str) -> Result<&'a str, 
     }
 }
 
-fn token_row(bytes: &[u8]) -> Result<Option<String>, String> {
+#[derive(PartialEq, Eq)]
+struct TokenSnapshot {
+    token: String,
+    tlb_tag: Option<String>,
+}
+
+impl TokenSnapshot {
+    fn matches_login(&self, login: &Value) -> bool {
+        login["token"].as_str() == Some(self.token.as_str())
+            && login.get("tokenTlbTag").and_then(Value::as_str) == self.tlb_tag.as_deref()
+    }
+}
+
+fn token_row(bytes: &[u8]) -> Result<Option<TokenSnapshot>, String> {
     if bytes.len() > 65536 {
         return Err("Token Provider 响应过大".into());
     }
@@ -115,7 +138,18 @@ fn token_row(bytes: &[u8]) -> Result<Option<String>, String> {
     }
     let row = text
         .strip_prefix("Row: 0 token=")
-        .ok_or("Token SDK 未返回受支持的单行快照")?;
+        .ok_or_else(|| {
+            // Describe the envelope only; never echo token/proof/tracking data.
+            format!(
+                "Token SDK 未返回受支持的单行快照（字节数={}，行数={}，Row 行数={}，空响应={}，查询错误={}）",
+                bytes.len(),
+                text.lines().count(),
+                text.lines().filter(|line| line.starts_with("Row: ")).count(),
+                text.is_empty(),
+                text.starts_with("Error while accessing provider")
+                    || text.starts_with("Error:")
+            )
+        })?;
     if row.chars().any(char::is_control) {
         return Err("Token SDK 快照包含控制字符".into());
     }
@@ -128,36 +162,68 @@ fn token_row(bytes: &[u8]) -> Result<Option<String>, String> {
     if !header_text(&json!({"token":token}), "token", 16384)?.is_ascii() {
         return Err("原生 Token 编码无效".into());
     }
-    Ok(Some(token.to_owned()))
+    if row.matches(", track_data=").count() != 1 {
+        return Err("Token SDK 元数据边界有歧义".into());
+    }
+    let (_, tail) = row
+        .split_once(", track_data=")
+        .ok_or("Token SDK 缺少元数据边界")?;
+    // Decode only the boundary; never store tracking data or its key/proof fields.
+    let end = if tail.starts_with("NULL, token_tlb_tag=") {
+        4
+    } else {
+        let mut stream =
+            serde_json::Deserializer::from_str(tail).into_iter::<serde::de::IgnoredAny>();
+        stream
+            .next()
+            .ok_or("Token SDK 元数据为空")?
+            .map_err(|_| "Token SDK 元数据格式无效")?;
+        stream.byte_offset()
+    };
+    let tag = tail[end..]
+        .strip_prefix(", token_tlb_tag=")
+        .and_then(|v| v.strip_suffix(", is_login=1"))
+        .ok_or("Token SDK 标签边界无效")?;
+    if tag.contains(", ") || tag.len() > 16384 {
+        return Err("Token SDK 标签字段有歧义".into());
+    }
+    let tlb_tag = if tag.is_empty() || matches!(tag, "NULL" | "null") {
+        None
+    } else {
+        if !header_text(&json!({"tag":tag}), "tag", 16384)?.is_ascii() {
+            return Err("原生 Token 标签编码无效".into());
+        }
+        Some(tag.to_owned())
+    };
+    Ok(Some(TokenSnapshot {
+        token: token.to_owned(),
+        tlb_tag,
+    }))
 }
 
-fn read_token(adb: &Adb) -> Result<Option<String>, String> {
+fn read_token(adb: &Adb) -> Result<Option<TokenSnapshot>, String> {
     token_row(&adb.shell(&format!("content query --uri '{TOKEN_URI}' --user 0"), true)?)
 }
 
 pub(crate) fn confirm_import(adb: &Adb, session: &Value) -> Result<(), String> {
     if let Some(login) = session.get("nativeAuth") {
         validate(session)?;
-        if read_token(adb)?.as_deref() != login["token"].as_str() {
-            return Err("验证期间手机 Token 已变化，未保存新的登录配置，请重试".into());
+        if read_token(adb)?.is_none_or(|snapshot| !snapshot.matches_login(login)) {
+            return Err("验证期间手机 Token 或配套标签已变化，未保存新的登录配置，请重试".into());
         }
     }
     Ok(())
 }
 
-/// Import only the Token and public protocol metadata, not signing keys.
+/// Import the Token, its companion routing tag and protocol metadata, not signing keys.
 /// Existing Cookie-only sessions remain supported for uninspected APK builds.
 pub(crate) fn import(adb: &Adb, session: &Value) -> Result<Option<(Value, Value)>, String> {
     if !supported(session) {
         return Ok(None);
     }
     let read = || read_token(adb);
-    // A provider-created background process need not initialize account state.
-    // Normal app launch is sufficient; never force-stop or change the freezer.
-    adb.shell(
-        "am start -W -n com.ss.android.ugc.aweme/com.ss.android.ugc.aweme.splash.SplashActivity",
-        false,
-    )?;
+    // login_adb opens the app before reading device/install identity. Do not
+    // launch it here, after the candidate identity snapshot has been taken.
     let mut first = read()?;
     let mut stable = None;
     for _ in 0..4 {
@@ -178,9 +244,12 @@ pub(crate) fn import(adb: &Adb, session: &Value) -> Result<Option<(Value, Value)
         .duration_since(UNIX_EPOCH)
         .map_err(|_| "系统时间无效")?
         .as_secs();
-    let mut login = json!({"schema":1,"source":"android-token-provider","token":token,
+    let mut login = json!({"schema":1,"source":"android-token-provider","token":token.token.clone(),
         "sdkVersion":"2","passportSdkVersion":"60760","userAgent":agent,
         "verifiedAt":timestamp});
+    if let Some(tag) = &token.tlb_tag {
+        login["tokenTlbTag"] = json!(tag);
+    }
     // Bootstrap account identity from the phone SDK Token, never WebView Cookie.
     let account = request_account(session, &login)?;
     login["boundUserId"] = account["id"].clone();
@@ -189,8 +258,8 @@ pub(crate) fn import(adb: &Adb, session: &Value) -> Result<Option<(Value, Value)
     candidate["nativeAuth"] = login.clone();
     verify_online(&candidate)?;
     // A rotation while checking account identity must not save a stale/mixed import.
-    if read()?.as_deref() != login["token"].as_str() {
-        return Err("验证期间手机 Token 已变化，未保存新的登录配置，请重试".into());
+    if read()?.is_none_or(|snapshot| !snapshot.matches_login(&login)) {
+        return Err("验证期间手机 Token 或配套标签已变化，未保存新的登录配置，请重试".into());
     }
     Ok(Some((login, account)))
 }
@@ -401,12 +470,71 @@ mod tests {
     }
 
     #[test]
+    fn token_and_tag_must_stay_together_without_retaining_tracking_material() {
+        let row = b"Row: 0 token=fixture, ts_sign={}, track_data={\"nested\":{\"value\":\"a, b=c\"}}, token_tlb_tag=fixture-tag, is_login=1";
+        let snapshot = token_row(row).unwrap().unwrap();
+        assert!(snapshot.matches_login(&json!({"token":"fixture","tokenTlbTag":"fixture-tag"})));
+        assert!(!snapshot.matches_login(&json!({"token":"fixture","tokenTlbTag":"rotated"})));
+        assert!(!snapshot.matches_login(&json!({"token":"fixture"})));
+        assert!(!snapshot.matches_login(&json!({"token":"rotated","tokenTlbTag":"fixture-tag"})));
+        for track in ["NULL", "null", "{}"] {
+            let row = format!(
+                "Row: 0 token=fixture, ts_sign={{}}, track_data={track}, token_tlb_tag=NULL, is_login=1"
+            );
+            assert!(
+                token_row(row.as_bytes())
+                    .unwrap()
+                    .unwrap()
+                    .matches_login(&json!({"token":"fixture"}))
+            );
+        }
+        for tail in [
+            "{} trailing, token_tlb_tag=private-secret",
+            "{}, token_tlb_tag=fixture, extra=private-secret",
+            "{}, token_tlb_tag=非ASCII",
+            "{}, token_tlb_tag=fixture, token_tlb_tag=private-secret",
+        ] {
+            let row = format!("Row: 0 token=fixture, ts_sign={{}}, track_data={tail}, is_login=1");
+            assert!(
+                !token_row(row.as_bytes())
+                    .err()
+                    .unwrap()
+                    .contains("private-secret")
+            );
+        }
+    }
+
+    #[test]
+    fn optional_token_tag_is_sensitive_and_has_the_same_host_scope_as_token() {
+        let mut s = session();
+        assert!(validate(&s).is_ok());
+        assert!(headers(&s, HOST).unwrap().get("token-tlb-tag").is_none());
+        s["nativeAuth"]["tokenTlbTag"] = json!("fixture-tag");
+        let h = headers(&s, HOST).unwrap();
+        assert_eq!(h["token-tlb-tag"], "fixture-tag");
+        assert!(h["token-tlb-tag"].is_sensitive());
+        assert!(headers(&s, "media.example").unwrap().is_empty());
+        assert!(headers(&s, "webcast.amemv.com").unwrap().is_empty());
+        assert!(live_permission_auth(&s).unwrap().0["token-tlb-tag"].is_sensitive());
+        for bad in [
+            json!(null),
+            json!(""),
+            json!("NULL"),
+            json!("非ASCII"),
+            json!("private-secret\r\nx: injected"),
+        ] {
+            s["nativeAuth"]["tokenTlbTag"] = bad;
+            assert!(!validate(&s).unwrap_err().contains("private-secret"));
+        }
+    }
+
+    #[test]
     fn token_reader_distinguishes_unready_from_logged_out_and_malformed() {
         assert!(token_row(b"No result found.\n").unwrap().is_none());
         assert_eq!(
-            token_row(b"Row: 0 token=fixture, ts_sign={}, is_login=1\n")
+            token_row(b"Row: 0 token=fixture, ts_sign={}, track_data={}, token_tlb_tag=NULL, is_login=1\n")
                 .unwrap()
-                .as_deref(),
+                .as_ref().map(|v| v.token.as_str()),
             Some("fixture")
         );
         for row in [
@@ -416,7 +544,8 @@ mod tests {
         ] {
             assert!(
                 !token_row(row.as_bytes())
-                    .unwrap_err()
+                    .err()
+                    .unwrap()
                     .contains("private-secret")
             );
         }
