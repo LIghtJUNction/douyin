@@ -214,3 +214,11 @@ Field 13 是 Medusa 消息的一个字段，不是完整 X-Medusa。消息其余
 四个变体分别通过扩展密钥、单分组和完整封装公开向量。测试还定位并修正了列掩码的索引方向，避免只测变体 0 造成的假通过。公开 1,024 字节 S-box 保存在 `assets/metasec-fixtures/aes-v3-sbox.base64`，仅为算法常量。
 
 这完成了通用 v3 外层，不等于抖音 40.8 的消息和会话已恢复，也不证明当前服务端接受 v3 而不是更新分支。生产请求尚未启用。117 项项目测试通过。
+
+## DuckDroid2 同版本仿真通道
+
+通过 GitHub 找到 [djskncxm/DuckDroid2](https://github.com/djskncxm/DuckDroid2) 的 `dy7_case`。它固定抖音 40.8.0 的相同 SDK 版本，复现 `0x1000003` Context、`0x4000001` 配置注册、`0x4000002` 句柄、配置中心及设备/安装 ID 设置，再调用 `libmetasec_ml.so + 0x2e01c0` 的 `god7(url, headers)` 返回七组头。其公开记录还包含搜索、视频详情、评论、用户主页和作品的成功请求。该外部项目为 GPL-2.0-only，未把其源码并入当前 AGPL-3.0 仓库；通过独立进程的公开协议协作。
+
+新增显式 `DOUYIN_NATIVE_TRANSPORT=duckemu` 后端。Rust 客户端以 4 字节大端长度和 JSON 调用本地 `dy7.sock`，把最终 URL、CRLF 请求头及同一个毫秒票据交给仿真器，校验并合并七组返回头，随后固定到同一个原生实例。默认 socket 为 `/tmp/duckemu-dy7/dy7.sock`，可用 `DOUYIN_DUCKEMU_SOCKET` 覆盖。响应帧、签名头名称、文本、尺寸和错误码均有边界检查，错误信息不回显 Cookie 或响应体。
+
+模拟 Unix socket 测试覆盖请求参数、两次调用固定实例和无效响应；后端只允许 `aweme.snssdk.com`，不用于 Webcast 或媒体主机，也不会自动回退到手机。119 项项目测试通过。真实 DuckDroid2 服务、搜索和评论尚未在本项目完成验收，默认 `direct` 行为不变。

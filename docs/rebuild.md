@@ -225,3 +225,5 @@
 - 继续从同一许可兼容实现提取 Gorgon 与 Medusa 外层向量。新增 metasec::gorgon，query/body 摘要、显式 SDK 版本字、RC4 变体和位处理均匹配 GET/POST 固定输出；新增签名 Protobuf 编码器，覆盖字段顺序、ZigZag、浮点和嵌套消息；新增 metasec::envelope 的 xmxor、SM3 keyHash 与短输入错误。115 项本地测试通过。目标 40.8 的 SDK 版本字、消息字段和 AesV3 封装仍须分别核对，未接入生产请求。
 
 - 新增 metasec::aes_v3 与 seal_v3，完成四种 Khronos 变体的密钥扩展、分组加密、CBC、稀疏位回填，以及消息 xmxor、逆序掩码、校验字段和 Base64 外层。公开 S-box 仅作为算法常量 fixture 保存。四个变体均通过扩展密钥、单分组及完整封装向量；对拍定位并修复了列掩码索引方向。117 项本地测试通过。通用 v3 外层已完成，但目标 40.8 的消息字段、许可和 SDK 会话仍未确定，未接入生产请求。
+
+- 通过 gh 找到 djskncxm/DuckDroid2 的抖音 40.8 dy7_case：同版本原生仿真已完成配置注册和 `libmetasec_ml.so + 0x2e01c0` 七头入口，公开记录已跑通搜索、详情、评论和作品。该项目为 GPL-2.0-only，不并入源码，改走独立进程的公开 Unix socket 协议。新增显式 `DOUYIN_NATIVE_TRANSPORT=duckemu` 与 `DOUYIN_DUCKEMU_SOCKET`，Rust 客户端提交最终 URL、CRLF 请求头及同一毫秒票据，校验七组返回头并固定实例；只允许原生 API 主机，不回退手机，默认 direct 不变。模拟 socket 验证请求帧与实例保持，119 项本地测试通过。真实仿真服务和业务接口尚待本项目验收。

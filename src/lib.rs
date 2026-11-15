@@ -7,6 +7,7 @@ pub mod comments;
 pub mod cookie;
 pub mod crawler;
 pub mod download;
+mod duckemu;
 pub mod guard;
 pub mod guard_adb;
 pub mod insights;

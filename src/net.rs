@@ -3,7 +3,11 @@ use std::cell::RefCell;
 use std::io::Read;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use reqwest::{blocking::Client, redirect::Policy};
+use reqwest::{
+    blocking::Client,
+    header::{HeaderMap, HeaderValue},
+    redirect::Policy,
+};
 use serde_json::Value;
 use url::Url;
 
@@ -13,6 +17,7 @@ pub struct NativeClient {
     client: Client,
     session: Value,
     phone: RefCell<Option<crate::phone::PhoneClient>>,
+    duckemu: crate::duckemu::DuckemuClient,
     mode: String,
 }
 
@@ -27,15 +32,17 @@ impl NativeClient {
             .build()
             .map_err(|_| "无法创建抖音请求客户端")?;
         let mode = std::env::var("DOUYIN_NATIVE_TRANSPORT").unwrap_or_else(|_| "direct".into());
-        if !matches!(mode.as_str(), "direct" | "phone") {
+        if !matches!(mode.as_str(), "direct" | "phone" | "duckemu") {
             return Err(
-                "DOUYIN_NATIVE_TRANSPORT 仅支持 direct（独立运行）或 phone（协议调试）".into(),
+                "DOUYIN_NATIVE_TRANSPORT 仅支持 direct、duckemu（本地仿真）或 phone（协议调试）"
+                    .into(),
             );
         }
         Ok(Self {
             client,
             session,
             phone: RefCell::new(None),
+            duckemu: crate::duckemu::DuckemuClient::default(),
             mode,
         })
     }
@@ -114,6 +121,9 @@ impl NativeClient {
             .extend_pairs(identity)
             .extend_pairs(params.iter().map(|(k, v)| (k.as_str(), v.as_str())));
         let host = url.host_str().ok_or("接口缺少主机")?;
+        if self.mode == "duckemu" && host != "aweme.snssdk.com" {
+            return Err("DuckDroid2 签名通道只允许抖音原生 API 主机".into());
+        }
         let (native_headers, agent) =
             if host == "webcast.amemv.com" && url.path() == "/webcast/user/permission/" {
                 crate::native_auth::live_permission_auth(&self.session)?
@@ -123,12 +133,13 @@ impl NativeClient {
                     crate::native_auth::user_agent(&self.session, host)?,
                 )
             };
+        let mut effective = HeaderMap::new();
+        effective.insert(
+            "User-Agent",
+            HeaderValue::from_str(agent).map_err(|_| "原生 User-Agent 格式无效")?,
+        );
         // Verified native Token credentials do not depend on WebView Cookie
         // validity. Keep the legacy path for old sessions and other hosts.
-        let mut request = self.client.get(url.clone()).header("User-Agent", agent);
-        if host == "aweme.snssdk.com" {
-            request = request.header("x-ss-req-ticket", crate::native_auth::request_ticket()?);
-        }
         if native_headers.is_empty() {
             let cookies = self.session["cookies"]
                 .as_array()
@@ -137,14 +148,31 @@ impl NativeClient {
                 .duration_since(UNIX_EPOCH)
                 .map_err(|_| "系统时间无效")?
                 .as_secs();
-            request = request.header(
-                "Cookie",
-                auth::cookie_header(cookies, host, url.path(), now)?,
-            );
+            let mut value =
+                HeaderValue::from_str(&auth::cookie_header(cookies, host, url.path(), now)?)
+                    .map_err(|_| "Cookie 请求头格式无效")?;
+            value.set_sensitive(true);
+            effective.insert("Cookie", value);
         } else {
-            request = request.headers(native_headers);
+            effective.extend(native_headers);
         }
-        let response = request.send().map_err(|_| "抖音请求失败或超时")?;
+        if host == "aweme.snssdk.com" {
+            effective.insert(
+                "x-ss-req-ticket",
+                crate::native_auth::request_ticket()?
+                    .parse()
+                    .map_err(|_| "毫秒请求票据格式无效")?,
+            );
+        }
+        if self.mode == "duckemu" {
+            effective.extend(self.duckemu.sign(&url, &effective)?);
+        }
+        let response = self
+            .client
+            .get(url.clone())
+            .headers(effective)
+            .send()
+            .map_err(|_| "抖音请求失败或超时")?;
         if !response.status().is_success() {
             return Err(format!("抖音接口返回 HTTP {}", response.status().as_u16()));
         }
