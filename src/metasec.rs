@@ -1,12 +1,14 @@
 //! Public APK constant decoding, reconstructed from the pinned 40.8.0 fixtures.
 //! This does not initialize Metasec or sign HTTP requests.
 
+pub mod aes_v3;
 pub mod digest;
 pub mod envelope;
 pub mod field13;
 pub mod gorgon;
 pub mod helios;
 pub mod protobuf;
+pub mod seal_v3;
 pub mod speck;
 
 use serde_json::Value;

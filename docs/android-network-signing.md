@@ -206,3 +206,11 @@ Field 13 是 Medusa 消息的一个字段，不是完整 X-Medusa。消息其余
 `metasec::protobuf` 提供签名消息所需的 bytes/string/signed/unsigned/float/message 编码，保留字段顺序、ZigZag 和嵌套消息，不重排 query。`metasec::envelope` 实现 Medusa 的 `xmxor` 与 `sign_key || LE32(nonce) || sign_key` SM3 `keyHash`，返回外层掩码；短输入会显式报错。固定 `xmxor`、SM3 key 和 seed 向量均匹配公开实现。
 
 这些函数仍未提供目标版本的消息字段、AesV3 封装或真实 SDK 会话，也未接入生产请求。115 项项目测试通过。
+
+## AesV3 与 Medusa v3 外层封装
+
+`metasec::aes_v3` 实现四种 Khronos 变体的 S-box 窗口、列置换、密钥扩展、两轮 CBC 和稀疏位回填。`metasec::seal_v3` 将已编码消息经过 `xmxor`、标志拼接、逆序掩码、校验字段、AesV3 和版本前缀，生成最终 Base64。应用 ID、许可、消息字段和 SDK 状态仍由调用方显式提供，未选择其他应用的常量。
+
+四个变体分别通过扩展密钥、单分组和完整封装公开向量。测试还定位并修正了列掩码的索引方向，避免只测变体 0 造成的假通过。公开 1,024 字节 S-box 保存在 `assets/metasec-fixtures/aes-v3-sbox.base64`，仅为算法常量。
+
+这完成了通用 v3 外层，不等于抖音 40.8 的消息和会话已恢复，也不证明当前服务端接受 v3 而不是更新分支。生产请求尚未启用。117 项项目测试通过。

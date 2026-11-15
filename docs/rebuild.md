@@ -223,3 +223,5 @@
 - 继续通过 gh 找到许可兼容的 sunnysky123/hongguo-web pure-sign.js（MIT 仓库，算法源头标注 GPL-3.0），以其公开实现生成黄金向量，未采用另一份 PolyForm 非商业许可代码。新增 metasec::field13，完整实现 SM3(query)、MD5(body)/零摘要、分支选择、重量级 112 轮路径、36 字节直通路径及变种 MD5 路径。9 组合成向量覆盖全部三个分支，输出逐字节一致；新增 sm3 依赖，112 项本地测试通过。该字段尚未组装成完整 Medusa，也未接入生产请求。真实 auth status 显示当前保存登录未获服务端确认，本轮未进行已认证搜索验收。
 
 - 继续从同一许可兼容实现提取 Gorgon 与 Medusa 外层向量。新增 metasec::gorgon，query/body 摘要、显式 SDK 版本字、RC4 变体和位处理均匹配 GET/POST 固定输出；新增签名 Protobuf 编码器，覆盖字段顺序、ZigZag、浮点和嵌套消息；新增 metasec::envelope 的 xmxor、SM3 keyHash 与短输入错误。115 项本地测试通过。目标 40.8 的 SDK 版本字、消息字段和 AesV3 封装仍须分别核对，未接入生产请求。
+
+- 新增 metasec::aes_v3 与 seal_v3，完成四种 Khronos 变体的密钥扩展、分组加密、CBC、稀疏位回填，以及消息 xmxor、逆序掩码、校验字段和 Base64 外层。公开 S-box 仅作为算法常量 fixture 保存。四个变体均通过扩展密钥、单分组及完整封装向量；对拍定位并修复了列掩码索引方向。117 项本地测试通过。通用 v3 外层已完成，但目标 40.8 的消息字段、许可和 SDK 会话仍未确定，未接入生产请求。

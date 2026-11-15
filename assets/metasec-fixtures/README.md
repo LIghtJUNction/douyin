@@ -24,6 +24,12 @@ Java iteration order; the Rust encoder does not reconstruct HashMap bucket
 order from insertion order. `wireText` additionally permits byte comparison
 for the configured case, including ASCII controls, slashes and U+2028/U+2029.
 
+`aes-v3-sbox.base64` contains the public 1,024-byte (four 256-byte windows)
+AES v3 table from the GPL-3.0 algorithm lineage documented by
+[sunnysky123/hongguo-web](https://github.com/sunnysky123/hongguo-web/tree/f458d7455322d4fa98540831477d88429a80b0e5).
+It selects a window by Khronos for synthetic cipher/envelope tests. The table
+is an algorithm constant, not an application license or account key.
+
 This fixture contains no account, device credential, signing key or real
 license. It proves configuration encoding, not SDK initialization, request
 signing, server acceptance or Android broadcasting.
