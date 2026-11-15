@@ -69,7 +69,15 @@ cd douyin
 cargo install --path . --locked
 ```
 
-源码构建需要 C 编译器和 libclang；首次构建 Frida 依赖时会下载对应开发包。普通 CLI 使用不需要 Android SDK；只有重新编译随包附带的 Android 元数据辅助程序时才需要 JDK 和 Android SDK。
+源码构建需要 C 编译器和 libclang；首次构建 Frida 依赖时会下载对应开发包。Windows 构建通过 vcpkg 使用动态 SQLite，避免与 Frida 静态库中的 SQLite 重复链接：
+
+```powershell
+vcpkg install sqlite3:x64-windows
+$env:VCPKGRS_DYNAMIC = "1"
+$env:PATH = "$env:VCPKG_ROOT\installed\x64-windows\bin;$env:PATH"
+```
+
+普通 CLI 使用不需要 Android SDK；只有重新编译随包附带的 Android 元数据辅助程序时才需要 JDK 和 Android SDK。
 
 ### 按使用场景准备环境
 
