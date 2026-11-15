@@ -234,3 +234,5 @@ Field 13 是 Medusa 消息的一个字段，不是完整 X-Medusa。消息其余
 后续使用同一 DuckDroid2 服务验证 feed、music、hashtag、mix，各保存 1 条。话题接口实际把作品放在 `mix_list[*].aweme_info`，不是 `aweme_list`，已优先解析并复用原有展平。分页器现在允许游标前进的空页，但最多连续 10 页无新增；重复游标仍立即拒绝，避免无限循环和静默截断。123 项项目测试通过。
 
 收藏、关注和粉丝在公开参考身份下返回业务错误或空响应，未宣称成功。多个公开房间的 `live info` 在当前网络均返回 0 字节，因此直播查询仍未验收；仿真签名仅额外放开固定 `/webcast/room/info/`，允许该公开查询无 Cookie，直播权限接口仍保持 direct。
+
+评论的 `--with-replies --reply-limit 1 --format chatml-jsonl` 也已通过真实接口验收，导出包含主评论、真实回复及用户元数据。使用搜索结果中的公开封面 URL 完成 CDN 下载，产物为 ISO Media；`stats` 与 `insights` 离线命令均完成运行。临时签名服务已关闭，默认登录配置未修改。
