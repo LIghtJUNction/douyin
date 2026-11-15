@@ -33,8 +33,10 @@ quick-xml = "0.42.0"
 rusqlite = { version = "0.42.0", default-features = false, features = ["libsqlite3-sys", "bundled"] }
 tempfile = "3.27.0"
 tiny_http = "0.12.0"
-rmcp = { version = "3.10.0", default-features = false, features = ["server", "transport-io"] }
-tokio = { version = "1.54.1", features = ["rt", "io-std", "time"] }
+rmcp = { version = "3.10.0", default-features = false, features = ["server", "transport-io", "transport-streamable-http-server"] }
+tokio = { version = "1.54.1", features = ["rt", "io-std", "time", "net", "signal", "sync"] }
+tokio-util = { version = "0.7.20", default-features = false }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
 frida = { version = "0.17.2", features = ["auto-download"] }
 lzma-rust2 = { version = "0.25.0", default-features = false, features = ["std", "xz"] }
 md-5 = "0.10.6"

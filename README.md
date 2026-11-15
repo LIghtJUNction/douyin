@@ -1,20 +1,20 @@
 # douyin-cli
 
-用命令行操作抖音，Rust 写的。
+用 Rust 编写的抖音命令行工具。
 
-这个项目正在重写。我要的是模拟安卓端：手机上能干什么，命令行也能干什么。手机已经登录了，连上 ADB，执行 `auth --adb` 导入，之后断开手机也能用。登录态和设备标识一起处理，不能随便拼一套参数冒充手机。
+项目正在重写，目标是模拟安卓端：手机上能做的事，命令行也能做。手机登录抖音后，通过 ADB 连接并执行 `auth --adb` 导入，之后即使断开手机也能使用。登录态与设备标识会一并处理，不会随意拼凑参数来冒充手机。
 
-直播也要支持，用导入的手机身份开播。OBS 两个方向都要有：OBS 往抖音推流，抖音直播画面送进 OBS。这里说的是开发目标，还没全部做完。全部做完、实机验证通过，再发一个大版本。
+直播同样在支持范围内，计划使用导入的手机身份开播。OBS 需要双向联动：OBS 向抖音推流，抖音直播画面送入 OBS。以上是开发目标，尚未全部完成；全部完成并通过实机验证后，再发布大版本。
 
-**重写还没完成，尚未发布新版。当前源码已经跑通这些：**
+**重写尚未完成，新版也未发布。当前源码已跑通以下功能：**
 
 - `auth --adb` 导入原生 Token，核对账号、设备 ID、安装 ID 和应用版本；导入过程中标识变化就拒绝保存。
 - 导入后断开手机、不带 WebView Cookie，账号验证、个人资料、关注列表和直播配置查询都已实测通过；直播配置查询也跑过实际 MCP 调用。
-- 本地 128 项 Rust 测试、Clippy、release 构建和打包校验通过。OBS 目前只验过本地联动，真实推流和直播画面还没验收。
+- 本地 140 项 Rust 测试、Clippy、release 构建和打包校验通过。OBS 目前只验过本地联动，真实推流和直播画面还没验收。
 
-搜索、完整签名、手机身份开播，以及手机端其余功能还在做。下面写的是当前源码的用法，不能把它当成已发布版本的功能清单。
+搜索、完整签名、手机身份开播以及手机端的其余功能仍在开发中。下文介绍的是当前源码的用法，并非已发布版本的功能清单。
 
-## 先跑起来
+## 快速开始
 
 需要 Rust 1.100+、ADB，以及一台已经登录抖音的 Android 手机。目前导入登录态需要手机 root。源码构建还需要 C 编译器和 libclang，首次构建会下载 Frida SDK 开发包。
 
@@ -24,7 +24,7 @@ cd douyin
 cargo install --path . --locked
 ```
 
-看看设备有没有连上：
+确认设备已连接：
 
 ```bash
 adb devices
@@ -41,7 +41,7 @@ douyin auth --adb
 
 抖音 40.8.0 优先导入原生 Token，同时保留服务端给出的非空 Token 标签，不依赖 WebView Cookie 确认账号。带标签导入和屏蔽 ADB 后的账号验证已实测通过。导入后，`auth status` 和基础请求可以脱离手机运行。其他版本保留已有的 Cookie 登录方式。
 
-连了多台手机就指定一台：
+连接了多台手机时，指定其中一台：
 
 ```bash
 douyin auth --adb --serial 你的设备序列号
@@ -67,7 +67,7 @@ douyin auth status --offline
 douyin auth logout
 ```
 
-这个命令不会把手机上的抖音退出登录。
+该命令不会让手机上的抖音退出登录。
 
 ## 读取资料和关注列表
 
@@ -118,11 +118,20 @@ douyin auth status --oauth
 douyin auth refresh
 douyin api userinfo
 douyin mcp
+douyin mcp --listen 127.0.0.1:8788
+douyin mcp --listen 127.0.0.1:8788 --webhook https://example.com/events --event-token "入口令牌" --webhook-token "转发令牌"
 ```
 
 OpenAPI 使用应用授权，ADB 导入使用手机登录态。评论回复、私信发送等写操作需要 `--yes`；MCP 调用需要 `confirmed=true`。
 
-OAuth、OpenAPI 已重写并通过本地验证。MCP 接入了 [官方 Rust SDK](https://github.com/modelcontextprotocol/rust-sdk)，新旧协议都跑过真实 stdio 进程测试。开放平台的实际授权、权限和业务接口还要继续验证。
+MCP 接入了 [官方 Rust SDK](https://github.com/modelcontextprotocol/rust-sdk)，默认走 stdio；传入 `--listen`（或 `DOUYIN_MCP_LISTEN`）后启动 Streamable HTTP，仅允许监听回环地址（远程访问需通过带认证的反向代理），同时暴露两个端点：
+
+- `/mcp`：MCP Streamable HTTP 协议端点。
+- `/events`：事件接收入口（`POST` JSON，请求体上限 1 MiB，需包含 `type` 字段及可选 `data` 字段），会封装为包含 `id`、`type`、`source`、`timestamp`、`data` 的事件信封并同步转发到 `--webhook`（或 `DOUYIN_MCP_WEBHOOK`）。
+
+Webhook 仅允许 HTTPS 或回环 HTTP（`127.0.0.1`、`[::1]`、`localhost`），不跟随重定向；可用 `--event-token`（`DOUYIN_MCP_EVENT_TOKEN`）校验 `/events` 的 `Authorization: Bearer` 令牌，用 `--webhook-token`（`DOUYIN_MCP_WEBHOOK_TOKEN`）在转发时附带 `Bearer` 令牌。
+
+OAuth、OpenAPI 已重写并通过本地验证；MCP 的 stdio 与 Streamable HTTP（含 `/events` 认证与 Webhook 转发）均已跑过真实进程端到端测试。开放平台实际授权、业务接口以及抖音消息/通知的自动推送源还需继续验证。
 
 ## 网页 Cookie
 
@@ -151,7 +160,7 @@ douyin live obs source-status --name "douyin-live"
 douyin live obs stop --yes
 ```
 
-推流配置文件是 `{"server":"rtmps://推流主机/路径/","key":"推流密钥"}`。也支持 `{"rtmp_push_url":"完整 RTMP 或 RTMPS 推流地址"}`，会按原始字节拆分，保留签名参数；两种格式不能混用。拉流文件只放完整的直播播放地址。文件里有私密地址和密钥，自己保管，不要提交到仓库。
+推流配置文件是 `{"server":"rtmps://推流主机/路径/","key":"推流密钥"}`。也支持 `{"rtmp_push_url":"完整 RTMP 或 RTMPS 推流地址"}`，会按原始字节拆分，保留签名参数；两种格式不能混用。拉流文件只放完整的直播播放地址。文件中含有私密地址和密钥，请自行妥善保管，不要提交到仓库。
 
 `configure-push` 默认只配置，增加 `--start` 才启动 OBS 推流；已经推流时拒绝替换目标。`add-source` 在指定场景新建媒体源，重名会报错。`source-status` 只读查询媒体源的播放状态和进度，创建成功不代表已经解码出画面。`stop` 停止 OBS 推流，抖音直播间的结束流程还要单独实现。
 
@@ -178,13 +187,13 @@ douyin stats works.jsonl --author 作者名 --format markdown
 
 `insights` 看词频、热梗候选和需求关键词。`stats` 统计点赞、评论、收藏、分享，支持旧版导出和原始接口数据。缺失的数据会标出来，不会当成真的零。
 
-这些是规则分析，综合分也不是互动率，别拿它代替实际判断。
+这些是规则分析，综合分也不是互动率，不能代替实际判断。
 
-## 接下来补什么
+## 后续计划
 
 搜索、作品列表和评论的联网流程还在验证，网页 Cookie 采集后端也要补齐。推荐、互动、发布、草稿、直播、消息和账号设置都在范围内，不能只做到命令能解析。
 
-这些还没有全部实现，不能拿一个通用请求命令就说“所有功能都支持”。具体进度和验收要求放在 [重建记录](docs/rebuild.md)。
+这些功能尚未全部实现，不能因为有一个通用请求命令，就声称“支持所有功能”。具体进度和验收要求放在 [重建记录](docs/rebuild.md)。
 
 如果你要用已发布的旧版：
 
@@ -205,7 +214,7 @@ douyin --help
 douyin auth --help
 ```
 
-## 配置放哪
+## 配置文件
 
 登录态保存在 `douyin-cli` 配置目录下的 `session.json`。默认位置：
 
@@ -215,7 +224,7 @@ douyin auth --help
 
 同一目录下，`oauth.json` 保存开放平台授权，`cookie.json` 保存网页 Cookie。旧版 `config/settings.json` 中的 OAuth 和 Cookie 可以兼容读取。`auth logout` 清除设备登录与 OAuth，网页 Cookie 用 `auth cookie-logout` 单独清除。
 
-里面有登录凭据，别上传到仓库，也别贴到 Issue 里。
+这些文件包含登录凭据，请勿提交到仓库，也不要贴到 Issue 中。
 
 ## 本地验证
 
@@ -227,7 +236,7 @@ cargo build --release --locked --offline
 cargo package --locked --offline
 ```
 
-测试通过和手机上能用是两回事，都要验。
+测试通过不等于手机上可用，两者都需要验证。
 
 修改应用内通道脚本时，还要用开发机上的 Node 跑隔离测试，检查账号切换、设备变化、路径和参数是否会在请求前被拦下：
 

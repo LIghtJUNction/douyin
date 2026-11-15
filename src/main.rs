@@ -18,8 +18,8 @@ enum Command {
     PhoneWorker,
     /// 采集作品评论与楼中楼回复
     Comment(douyin_cli::comments::CommentArgs),
-    /// 通过 stdio 启动 MCP 服务器
-    Mcp,
+    /// 通过 stdio 或 Streamable HTTP 启动 MCP，支持事件 Webhook
+    Mcp(douyin_cli::mcp_http::McpArgs),
     /// 调用官方 OpenAPI，需要开放平台应用授权
     Api(douyin_cli::api::ApiArgs),
     /// 下载抖音 CDN 媒体 URL，不向媒体主机发送登录凭据
@@ -111,7 +111,7 @@ fn run() -> Result<(), String> {
         Command::Live(args) => douyin_cli::live::run(args)?,
         Command::PhoneWorker => douyin_cli::phone::worker()?,
         Command::Comment(args) => douyin_cli::comments::run(args)?,
-        Command::Mcp => douyin_cli::mcp::run_stdio()?,
+        Command::Mcp(args) => douyin_cli::mcp_http::run(args)?,
         Command::Api(args) => douyin_cli::api::run(args)?,
         Command::Download { url, output } => douyin_cli::download::url(&url, &output)?,
         Command::Me => {

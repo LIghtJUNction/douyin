@@ -208,26 +208,35 @@ impl NativeClient {
             HeaderValue::from_str(agent).map_err(|_| "原生 User-Agent 格式无效")?,
         );
         effective.insert("Accept-Encoding", HeaderValue::from_static("gzip, deflate"));
-        // Verified native Token credentials do not depend on WebView Cookie
-        // validity. Keep the legacy path for old sessions and other hosts.
-        if native_headers.is_empty() {
-            let cookies = self.session["cookies"]
-                .as_array()
-                .ok_or("登录配置缺少 Cookie")?;
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_err(|_| "系统时间无效")?
-                .as_secs();
-            let cookie = if host == "webcast.amemv.com" && url.path() == "/webcast/room/info/" {
-                auth::cookie_header(cookies, host, url.path(), now).unwrap_or_default()
-            } else {
-                auth::cookie_header(cookies, host, url.path(), now)?
-            };
+        // Token authenticates the account; anonymous/device Cookie context is still
+        // required for some public lists (comments). Send both when available.
+        let has_token = !native_headers.is_empty();
+        if has_token {
+            effective.extend(native_headers);
+        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| "系统时间无效")?
+            .as_secs();
+        let allow_empty_cookie = host == "webcast.amemv.com" && url.path() == "/webcast/room/info/";
+        let cookie = match self.session["cookies"].as_array() {
+            Some(cookies) if !cookies.is_empty() => {
+                if allow_empty_cookie {
+                    auth::cookie_header(cookies, host, url.path(), now).unwrap_or_default()
+                } else {
+                    auth::cookie_header(cookies, host, url.path(), now)?
+                }
+            }
+            _ if has_token => device_install_cookie(&self.session).unwrap_or_default(),
+            _ if allow_empty_cookie => String::new(),
+            _ => return Err("登录配置缺少 Cookie".into()),
+        };
+        if !cookie.is_empty() {
             let mut value = HeaderValue::from_str(&cookie).map_err(|_| "Cookie 请求头格式无效")?;
             value.set_sensitive(true);
             effective.insert("Cookie", value);
-        } else {
-            effective.extend(native_headers);
+        } else if !has_token && !allow_empty_cookie {
+            return Err("登录配置缺少 Cookie".into());
         }
         if host == "aweme.snssdk.com"
             || (host == "webcast.amemv.com" && url.path() == "/webcast/room/info/")
@@ -304,12 +313,11 @@ impl NativeClient {
                 )
             })?
             .ok_or_else(|| response_format_error(&bytes, &content_type, &encoding))?;
-        if bytes[stream.byte_offset()..]
-            .iter()
-            .any(|byte| !byte.is_ascii_whitespace())
-        {
+        let trailer = &bytes[stream.byte_offset()..];
+        if trailer.iter().any(|byte| !byte.is_ascii_whitespace()) {
             check_response(&value)?;
-            return Err("接口 JSON 后存在非空白附加数据".into());
+            consume_trailing_json_objects(trailer)?;
+            return Ok(value);
         }
         check_response(&value)?;
         Ok(value)
@@ -524,6 +532,38 @@ pub(crate) fn truthy(value: &Value) -> bool {
         .unwrap_or_else(|| integer(value).is_some_and(|n| n != 0))
 }
 
+fn device_install_cookie(session: &Value) -> Option<String> {
+    let install_id = session["device"]["installId"]
+        .as_str()
+        .filter(|value| !value.is_empty() && *value != "0")
+        .map(str::to_owned)
+        .or_else(|| {
+            integer(&session["device"]["installId"])
+                .filter(|value| *value > 0)
+                .map(|value| value.to_string())
+        })?;
+    Some(format!("install_id={install_id}"))
+}
+
+fn consume_trailing_json_objects(trailer: &[u8]) -> Result<(), String> {
+    let mut offset = 0;
+    while offset < trailer.len() {
+        while offset < trailer.len() && trailer[offset].is_ascii_whitespace() {
+            offset += 1;
+        }
+        if offset >= trailer.len() {
+            return Ok(());
+        }
+        let mut stream =
+            serde_json::Deserializer::from_slice(&trailer[offset..]).into_iter::<Value>();
+        match stream.next() {
+            Some(Ok(_)) => offset += stream.byte_offset(),
+            Some(Err(_)) | None => return Err("接口 JSON 后存在非空白附加数据".into()),
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn check_response(value: &Value) -> Result<(), String> {
     if value["search_nil_info"]["search_nil_type"] == "antispam_check"
         || value["search_nil_info"]["search_nil_item"] == "hit_shark"
@@ -610,6 +650,29 @@ mod tests {
         ] {
             assert!(check_response(&value).is_err());
         }
+    }
+
+    #[test]
+    fn accepts_concatenated_json_trailers_and_rejects_opaque_padding() {
+        assert!(consume_trailing_json_objects(br#"{"log_pb":{"impr_id":"x"}}"#).is_ok());
+        assert!(consume_trailing_json_objects(br#"  {"a":1}{"b":2} "#).is_ok());
+        assert!(consume_trailing_json_objects(b"\n\t").is_ok());
+        assert!(consume_trailing_json_objects(b"not-json").is_err());
+        assert!(consume_trailing_json_objects(&[0, 1, 2, 3]).is_err());
+    }
+
+    #[test]
+    fn device_install_cookie_uses_positive_install_identifiers_only() {
+        assert_eq!(
+            device_install_cookie(&json!({"device":{"installId":"123"}})).as_deref(),
+            Some("install_id=123")
+        );
+        assert_eq!(
+            device_install_cookie(&json!({"device":{"installId":456}})).as_deref(),
+            Some("install_id=456")
+        );
+        assert!(device_install_cookie(&json!({"device":{"installId":0}})).is_none());
+        assert!(device_install_cookie(&json!({"device":{}})).is_none());
     }
 
     #[test]

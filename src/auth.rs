@@ -85,6 +85,8 @@ pub fn login_adb(serial: Option<&str>) -> Result<Value, String> {
         session["nativeAuth"] = login;
         // Optional compatibility credentials must independently confirm this
         // same SDK account and installation. Failure never downgrades Token auth.
+        // When login Cookies cannot be verified, still keep anonymous device
+        // Cookies that match install_id — public lists such as comments need them.
         if let Ok((cookies, source)) = snapshot_cookies(&adb) {
             let mut candidate = session.clone();
             candidate["cookies"] = json!(cookies);
@@ -93,6 +95,9 @@ pub fn login_adb(serial: Option<&str>) -> Result<Value, String> {
             {
                 session["cookies"] = candidate["cookies"].clone();
                 session["nativeCookieSource"] = json!(source);
+            } else if let Some(public) = public_device_cookies(&cookies, install_id) {
+                session["cookies"] = json!(public);
+                session["nativeCookieSource"] = json!(format!("{source} (anonymous public)"));
             }
         }
     } else {
@@ -166,6 +171,35 @@ fn cookie_install_id(session: &Value) -> Result<Option<String>, String> {
         .find_map(|p| p.strip_prefix("install_id="))
         .filter(|v| valid_id(v))
         .map(str::to_owned))
+}
+
+fn public_device_cookies(cookies: &[Value], install_id: &str) -> Option<Vec<Value>> {
+    const NAMES: &[&str] = &[
+        "install_id",
+        "odin_tt",
+        "ttreq",
+        "store-region",
+        "store-region-src",
+    ];
+    let mut retained = Vec::new();
+    let mut matched_install = false;
+    for cookie in cookies {
+        let name = cookie["name"].as_str()?;
+        if !NAMES.contains(&name) {
+            continue;
+        }
+        let value = cookie["value"].as_str().filter(|value| !value.is_empty())?;
+        if name == "install_id" {
+            if value != install_id || !valid_id(value) {
+                return None;
+            }
+            matched_install = true;
+        }
+        retained.push(cookie.clone());
+    }
+    matched_install
+        .then_some(retained)
+        .filter(|rows| !rows.is_empty())
 }
 
 pub fn status(offline: bool) -> Result<Value, String> {
@@ -933,6 +967,23 @@ mod tests {
             "install_id=222; odin_tt=anonymous-context"
         );
         assert!(cookie_header(&rows, "media.example", "/", 1).is_err());
+    }
+
+    #[test]
+    fn public_device_cookies_keep_anonymous_context_and_reject_install_mismatch() {
+        let rows = vec![
+            cookie(".snssdk.com", "install_id", "222"),
+            cookie(".snssdk.com", "odin_tt", "anonymous-context"),
+            cookie(".snssdk.com", "sessionid", "private-login"),
+            cookie(".snssdk.com", "ttreq", "1"),
+        ];
+        let public = public_device_cookies(&rows, "222").unwrap();
+        let names: Vec<_> = public
+            .iter()
+            .map(|cookie| cookie["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["install_id", "odin_tt", "ttreq"]);
+        assert!(public_device_cookies(&rows, "999").is_none());
     }
 
     #[test]

@@ -5,7 +5,7 @@ description: Develop, install, test, package, troubleshoot, or operate this Rust
 
 # Douyin Rust CLI
 
-Treat this repository as a Rust CLI. `Cargo.toml` and committed `Cargo.lock` are the build source; do not reintroduce Python packaging. The small Android PackageManager helper in `assets/device-metadata/` is Java source with a bundled DEX; it reads public installed package metadata and, for the pinned supported APK build, invokes its pure Cronet default User-Agent generator in a temporary VM. The generator cache is initialized from PackageManager in that VM only. This value is private candidate metadata, not verified final wire User-Agent. After Token-only account verification it can be saved as the core native Token request agent; other hosts retain the legacy session agent. The helper runs temporarily via ADB and is cleaned up. Ordinary CLI builds and users do not need Java or an Android SDK.
+Treat this repository as a Rust CLI. `Cargo.toml` and committed `Cargo.lock` are the build source; do not reintroduce Python packaging. The small Android PackageManager helper in `assets/device-metadata/` is Java source with a bundled DEX; it reads public installed package metadata and, for the pinned supported APK build, invokes its pure Cronet default User-Agent generator in a temporary VM. The generator cache is initialized from PackageManager only inside that VM. This value is private candidate metadata, not verified final wire User-Agent. After Token-only account verification it can be saved as the core native Token request agent; other hosts retain the legacy session agent. The helper runs temporarily via ADB and is cleaned up. Ordinary CLI builds and users do not need Java or an Android SDK.
 
 ## Discover Before Acting
 
@@ -30,7 +30,7 @@ cargo install --path . --locked
 douyin --version
 ```
 
-Require Rust 1.100+ using `rust-toolchain.toml`. The deliberately deleted implementation must not be restored. The webpage Cookie backend now supports `DOUYIN_NATIVE_TRANSPORT=web` with a_bogus, msToken and verifyFp. Main-site fixed Python vectors and real search/comment requests pass; browser comments have saved 25 records across four pages, while the new browser reply route remains unverified after empty/timeout responses. Anonymous hashtag pagination remains unverified because the server repeats a zero cursor without new records. Aweme detail, user posts, favorites, collections, mix/music posts and feed use their browser routes and implement UIFID-bound WebSign against a public vector. Missing anonymous UIFID is minted from live.douyin.com Set-Cookie and persisted securely; logged-in Cookies missing UIFID are rejected rather than mixed with a different guest identity. Real aweme detail, user-post pages, search, finite feed, music and mix requests have passed; favorite and collection lists remain unverified. Web feed uses refresh_index batches and requires a finite limit. Public user posts no longer require native account fields or a profile prefetch; an empty result without profile corroboration is rejected. `DOUYIN_WEB_HOST` is limited to www.douyin.com or aweme.snssdk.com.
+Require Rust 1.100+ as pinned by `rust-toolchain.toml`. The deliberately deleted implementation must not be restored. The webpage Cookie backend now supports `DOUYIN_NATIVE_TRANSPORT=web` with a_bogus, msToken and verifyFp. Main-site fixed Python vectors and real search/comment requests pass; browser comments have saved 25 records across four pages, while the new browser reply route remains unverified after empty/timeout responses. Anonymous hashtag pagination remains unverified because the server repeats a zero cursor without new records. Aweme detail, user posts, favorites, collections, mix/music posts and feed use their browser routes and implement UIFID-bound WebSign against a public vector. Missing anonymous UIFID is minted from live.douyin.com Set-Cookie and persisted securely; logged-in Cookies missing UIFID are rejected rather than mixed with a different guest identity. Real aweme detail, user-post pages, search, finite feed, music and mix requests have passed; favorite and collection lists remain unverified. Web feed uses refresh_index batches and requires a finite limit. Public user posts no longer require native account fields or a profile prefetch; an empty result without profile corroboration is rejected. `DOUYIN_WEB_HOST` is limited to www.douyin.com or aweme.snssdk.com.
 
 ## Route Authentication
 
@@ -60,7 +60,7 @@ The successful 17.26.2 prototype does not prove the newly integrated Rust/17.9.5
 
 Keep API `version_code`, APK `manifest_version_code`, and `update_version_code` separate. Read them from installed package metadata and cross-check the APK version; never infer one from another. A transient successful signer experiment is not proof that the production backend works.
 
-Never ask the user to paste a real Cookie, client secret, or token into chat; keep secrets and response bodies out of logs and repositories.
+Never ask the user to paste a real Cookie, client secret, or token into chat. Keep secrets and response bodies out of logs and repositories.
 
 ### Native Token
 
@@ -143,9 +143,11 @@ douyin api userinfo
 douyin api comment-list --item-id "$DOUYIN_ITEM_ID"
 douyin api request GET /oauth/userinfo/ --param open_id="$DOUYIN_OPEN_ID"
 douyin mcp
+douyin mcp --listen 127.0.0.1:8788
+douyin mcp --listen 127.0.0.1:8788 --webhook https://example.com/events --event-token "$DOUYIN_MCP_EVENT_TOKEN" --webhook-token "$DOUYIN_MCP_WEBHOOK_TOKEN"
 ```
 
-Only send same-origin OpenAPI paths. Treat write operations as confirmation-gated unless the user explicitly supplies `--yes`.
+`douyin mcp` defaults to stdio. `--listen` / `DOUYIN_MCP_LISTEN` starts Streamable HTTP on a loopback address only (`/mcp` plus `/events`). Remote Webhook URLs must be HTTPS; loopback HTTP is allowed. Event ingress may require `--event-token`; outbound forwarding may attach `--webhook-token`. Do not claim remote exposure without an authenticated reverse proxy. Only send same-origin OpenAPI paths. Treat write operations as confirmation-gated unless the user explicitly supplies `--yes`.
 
 Use `DOUYIN_HOME` to isolate auth/config state during tests:
 
@@ -185,13 +187,11 @@ bash tools/build-device-helper.sh --check
 
 Native search metrics have shown final URL dispatch from aweme.snssdk.com to search3-search.amemv.com. Initial Java request headers/URL are not the final wire context; switching the independent Cookie request's host alone still returned a risk-controlled empty result. Do not hardcode this host or promote the candidate UA on that evidence. New SIGSEGV records appeared during the diagnostic period; cause remains unproven. Restore explicit research hooks and release retained Java wrappers before unloading; a syntax-checked cleanup change is not real-device crash acceptance.
 
-
 ### Android create-form constraints
 
 The inspected VIDEO enum uses logStreamingType=general, sceneName=video, background=false and camera=true; THIRD_PARTY uses thirdparty / third_party, background=true and camera=false. These are SDK enum metadata, not proven wire constants or room classification. The VIDEO create-form branch does not itself set third_party, live_audio or screen_shot. Its optional external-camera business payload requires both the SDK setting and a connected external-camera service; do not select it merely because the media originates in OBS. Three later putAll sources can replace prior fields, so any mobile-form validation must inspect the final merged form, not an early builder. No create/continue/end requests have been authorized for read-only acceptance.
 
 PermissionResult.broadcastConfig is scheduling configuration (scheduled_* fields), not a can-broadcast permission. `live permissions` exposes verified SDK scalar flag fields, including signed int32 sentinels, and known schedule fields; it excludes historical rooms, arbitrary added values and out-of-range flag numbers. Do not turn authentication_type, a settings flag, or status_code=0 into a mobile-broadcast acceptance claim.
-
 
 `live info` summaries expose sdk_stream_type using inspected 40.8.0 Room.getStreamType precedence: room_layout=1 or layout=ROOM_TYPE_OFFICIAL_ACTIVITY (initialized to 1) -> media, then live_type_screenshot, live_type_third_party, live_type_audio, otherwise video. Raw response classification requires the needed fields with supported types; absent metadata must not default to video. This client SDK classification alone never proves Android broadcaster identity. createRoomWithPb returns ExtraResponse<Room,RoomCreateBlockExtra>; account/stream/room validation and blocker handling remain required before any real creation can be accepted. Never print/persist blocker tickets, unique IDs or raw challenge payloads in public summaries.
 

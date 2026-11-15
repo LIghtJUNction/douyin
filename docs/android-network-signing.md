@@ -21,7 +21,7 @@
 
 分支条件中的字符串已通过后述公开样本离线探针解码并与 DEX 分支核对：http 前缀走 0x3000001，ws 前缀走 0x6000001；这不代表具体签名算法已经确定。URL 校验使用小写副本，但传给原生桥的仍是原始 URL；不能据此自行重排查询参数、改写编码或大小写。
 
-这条链路说明早期 Retrofit Request.getHeaders 不是完整出站上下文的证明。它没有证明原生回调具体输出哪些签名头，也没有证明搜索失败由其中某一项导致。
+这条链路说明，早期 Retrofit Request.getHeaders 不足以证明其为完整的出站上下文。它没有证明原生回调具体输出哪些签名头，也没有证明搜索失败由其中某一项导致。
 
 ## frameSign 的边界
 
@@ -46,7 +46,6 @@ APK 中的 lib/arm64-v8a/libmetasec_ml.so 为 4,530,128 字节的 ELF64 AArch64 
 
 注册证据：ev_e62e6c2dbea97eb9e3f768b7a5c2d5db2724fc2fe52ccc4c1d4a3b29a92d181c、ev_09f8f7ad8323930f399d8dbf6c88a39ff766ecb82d0143e3f9e62844c84fcb44。实例初始化和分发证据：ev_628d74acf6ec22cab9fc3c4ef73556b72c44f38dca2c777581e31cd849fb1f94、ev_4cbccfe5d0aff4d88f23d8167c14cf459cda37e28a85cfa6ce0972fa76d43e9d、ev_9b9255981a3b7ea3bc7e9067754c99102096b1ecf260731e9bdd3b933de1110c。
 
-
 ## JNI_OnLoad 静态入口
 
 已按符号范围核对 JNI_OnLoad（RVA 0x2a8bb8，长度 820 字节，证据 ev_65c91068bab823f496bf3571eccc41bb423b6e28e3c82b031ebf63df8c06b595）。入口有读取返回地址并计算间接跳转目标的片段，线性反汇编中被跳过的指令不能直接解释成实际执行行为。没有修改二进制或执行其中的陷阱/系统调用。
@@ -54,7 +53,6 @@ APK 中的 lib/arm64-v8a/libmetasec_ml.so 为 4,530,128 字节的 ELF64 AArch64 
 在当前文件字节对应的静态路径中，0x1811a4 的辅助函数逐字节 XOR 两个只读输入，写入缓冲区，遇到第二个输入的零字节结束。JNI_OnLoad 为该调用传入 0xa66f8、0x4697a4、0xa6754；解出的十进制字符串为 5256。后续 strtol 和地址运算得到 0x2a8eec - (5256 >> 2) + 0x522 = 0x2a8eec，并将该值作为首参数传给 0x29e764。
 
 0x28dfe8 在这条链路中表现为变参打包辅助函数，不能只因它出现在初始化路径就当作签名分发入口。0x29e764 的完整功能、首参数所指内容、JNI 注册表与方法实现仍未确定；不把候选地址命名成已经识别的虚拟机或签名函数。以上不证明运行时内存没有被初始化代码改写，也不等于动态执行验收。
-
 
 ## 有界离线仿真观察
 
@@ -217,7 +215,7 @@ Field 13 是 Medusa 消息的一个字段，不是完整 X-Medusa。消息其余
 
 ## DuckDroid2 同版本仿真通道
 
-通过 GitHub 找到 [djskncxm/DuckDroid2](https://github.com/djskncxm/DuckDroid2) 的 `dy7_case`。它固定抖音 40.8.0 的相同 SDK 版本，复现 `0x1000003` Context、`0x4000001` 配置注册、`0x4000002` 句柄、配置中心及设备/安装 ID 设置，再调用 `libmetasec_ml.so + 0x2e01c0` 的 `god7(url, headers)` 返回七组头。其公开记录还包含搜索、视频详情、评论、用户主页和作品的成功请求。该外部项目为 GPL-2.0-only，未把其源码并入当前 AGPL-3.0 仓库；通过独立进程的公开协议协作。
+通过 GitHub 找到 [djskncxm/DuckDroid2](https://github.com/djskncxm/DuckDroid2) 的 `dy7_case`。它固定抖音 40.8.0 的相同 SDK 版本，复现 `0x1000003` Context、`0x4000001` 配置注册、`0x4000002` 句柄、配置中心及设备/安装 ID 设置，再调用 `libmetasec_ml.so + 0x2e01c0` 的 `god7(url, headers)` 返回七组头。其公开记录还包含搜索、视频详情、评论、用户主页和作品的成功请求。该外部项目为 GPL-2.0-only，未把其源码并入当前 AGPL-3.0 仓库，仅通过独立进程以公开协议协作。
 
 新增显式 `DOUYIN_NATIVE_TRANSPORT=duckemu` 后端。Rust 客户端以 4 字节大端长度和 JSON 调用本地 `dy7.sock`，把最终 URL、CRLF 请求头及同一个毫秒票据交给仿真器，校验并合并七组返回头，随后固定到同一个原生实例。默认 socket 为 `/tmp/duckemu-dy7/dy7.sock`，可用 `DOUYIN_DUCKEMU_SOCKET` 覆盖。响应帧、签名头名称、文本、尺寸和错误码均有边界检查，错误信息不回显 Cookie 或响应体。
 
@@ -227,7 +225,7 @@ Field 13 是 Medusa 消息的一个字段，不是完整 X-Medusa。消息其余
 
 使用官方 LineageOS 21 包（SHA-256 `996d4fc28d495ac0fb831d65e9de98f7fd2749d78c72c9664808623b605f7ee6`）提取系统库后，独立 `dy7_case` 成功返回全部七组头。`tools/start-duckemu.sh` 启动本地服务，项目通过 `DOUYIN_NATIVE_TRANSPORT=duckemu` 实际完成：搜索保存 1 条、评论保存 2 条、单作品详情保存 1 条、用户作品保存 2 条。测试使用隔离目录中的公开参考身份，默认登录配置未修改，临时服务随后关闭。
 
-验收同时修复了实际请求差异：原生 Cookie 允许匿名公开请求但继续拒绝空/过期集合；搜索改为 POST `/aweme/v2/search_feed/` 并附精确正文 MD5；加入 `ts/_rticket` 和按设备可选的 channel/ac/resolution/dpi/cdid；启用 gzip；JSON 尾附数据先经业务状态检查。122 项项目测试通过。该结果证明外部仿真相加本机 CLI 的搜索、评论、详情和作品链路，不代表纯 Rust 签名算法、其他接口或直播已完成。
+验收同时修复了实际请求差异：原生 Cookie 允许匿名公开请求但继续拒绝空/过期集合；搜索改为 POST `/aweme/v2/search_feed/` 并附精确正文 MD5；加入 `ts/_rticket` 和按设备可选的 channel/ac/resolution/dpi/cdid；启用 gzip；JSON 尾附数据先经业务状态检查。122 项项目测试通过。该结果证明外部仿真器配合本机 CLI 时，搜索、评论、详情和作品链路可用，不代表纯 Rust 签名算法、其他接口或直播已完成。
 
 ## 其他公开采集与分页
 

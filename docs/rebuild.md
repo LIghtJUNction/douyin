@@ -11,7 +11,7 @@
 - 评论：主评论与回复分页，raw、chatml-jsonl、chatml-json。
 - OAuth：授权地址、回调监听、code 交换、token 刷新与注销。
 - OpenAPI：client token、userinfo、评论及回复、文字/图片/视频私信、同源通用请求。
-- 离线 insights、stats；stdio MCP；原有命令兼容性（按用户最新要求移除 Obscura）。
+- 离线 insights、stats；stdio MCP 与回环 Streamable HTTP MCP（含可选事件 Webhook）；原有命令兼容性（按用户最新要求移除 Obscura）。
 - 扩展抖音功能：推荐、搜索、互动、发布与草稿、直播、消息、账号及设置等逐项建立能力与实机验收证据；通用请求入口本身不证明全部功能可用。
 - 本地格式、测试、Clippy、release 构建、打包检查；实机验收；更新文档与技能；正式大版本发布与发布产物校验。
 
@@ -237,6 +237,7 @@
 - 新增 `tools/prepare-duckemu.sh`，自动克隆 DuckDroid2、构建、下载并校验官方 ROM、提取系统库，已有文件和构建会复用。已在现有 DuckDroid2 与 ROM 上实际执行成功，配合 start-duckemu.sh 完成一键准备和启动。
 
 - 新增 MCP 原生只读工具 `native_search`、`native_aweme`、`native_comments`、`native_comment_replies`、`native_user_posts`，复用 NativeClient 且单页数量限制为 1..=20。通过真实 stdio 分别调用成功，返回搜索结果、作品详情、评论、回复和用户作品；124 项本地测试通过。
+- 新增 `douyin mcp --listen` Streamable HTTP（仅回环）与可选 `/events`→Webhook 转发：远程 Webhook 必须 HTTPS，事件入口与转发可分别使用 Bearer 令牌，拒绝非回环监听及不完整令牌配置。本地集成测试覆盖 initialize/tools/list/tools/call、事件鉴权转发与 CLI 拒绝路径；开放平台业务接口与远程代理部署仍需继续验证。
 
 - 新增网页 Cookie 后端 `DOUYIN_NATIVE_TRANSPORT=web`，实现主站 a_bogus（page_id=6241、aid=6383）、msToken、verifyFp、正文 MD5 和 cookie.json 独立加载；没有原生 session.json 时也可发起公开采集。主站固定 Python 向量逐字节一致，搜索和评论各保存 1 条，作品详情仍返回空响应，用户作品仍需要原生账号上下文。126 项本地测试通过。`DOUYIN_WEB_HOST` 仅允许 www.douyin.com 或 aweme.snssdk.com。
 
@@ -246,3 +247,5 @@
 - 根据公开匿名访客流程实现纯 HTTP GET 直播首页获取 `ttwid`/`UIFID_TEMP`，只合并匿名 Cookie 并安全保存；登录 Cookie 缺少 UIFID 时拒绝混入另一游客身份。受保护请求补齐 `x-tt-argus`，`s_v_web_id` 存在时同时绑定 verifyFp/fp，不存在时不伪造配对指纹。真实网页作品详情和用户作品各保存 1 条，公开已结束直播间返回 status=4、独立 web_rid/live_id 与主播公开资料，搜索回归保存 1 条。133 项本地测试通过。
 - 网页公开 Feed 不再读取原生账号或保存账号 ID，按 `refresh_index` 进行有限批次分页，拒绝无限采集；真实保存 2 条。音乐作品与近期公开合集各保存 1 条，均通过真实 WebSign 请求。133 项本地测试通过。
 - 公开资料、主评论和回复改用对应浏览器路径且不强加 WebSign；主评论真实跨 4 页保存 25 条并正确保留 has_more/limit_reached。回复新路由出现空响应和网络超时，未标记在线通过。浏览器请求现统一携带 `x-tt-argus` 与同源 uifid 头，不再为浏览器路由伪造 verifyFp，回复补充 item_type/cut_version；主评论回归保存 2 条，回复仍为空响应。匿名话题请求未返回新增记录且重复零游标，继续由分页保护明确失败，未误报成功。133 项本地测试通过。
+
+- 评论等接口在业务 JSON 后追加第二段 `log_pb` 对象；解析时在 `status_code` 校验通过后消费尾随合法 JSON，拒绝不透明填充。Token 会话同时携带 Cookie：有登录 Cookie 则并用，否则用设备 `installId` 合成 `install_id`。Token 导入在 Passport 兼容 Cookie 校验失败时，仍保留匹配 `install_id` 的匿名公开 Cookie（`install_id`/`odin_tt`/`ttreq`/`store-region`/`store-region-src`），避免评论列表在 Token-only 下静默空返回。本轮 direct：`auth status` 在线、`me`、`live permissions`、关注列表通过；duckemu：搜索、详情、Feed、音乐、话题、用户作品、主评论+楼中楼通过。ADB 中途断开，未能对默认 Token 会话重导匿名 Cookie；合集/收藏/粉丝及写操作、安卓开播、默认 direct 完整签名仍未完成。本地测试与 Clippy、package 通过。

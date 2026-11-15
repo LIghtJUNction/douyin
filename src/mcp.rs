@@ -17,7 +17,7 @@ use crate::{
 };
 
 #[derive(Clone)]
-struct DouyinServer {
+pub(crate) struct DouyinServer {
     tools: Vec<Tool>,
 }
 
@@ -66,8 +66,12 @@ impl ServerHandler for DouyinServer {
     }
 }
 
+pub(crate) fn server() -> Result<DouyinServer, String> {
+    Ok(DouyinServer { tools: tools()? })
+}
+
 pub fn run_stdio() -> Result<(), String> {
-    let server = DouyinServer { tools: tools()? };
+    let server = server()?;
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
