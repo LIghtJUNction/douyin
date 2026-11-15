@@ -1,6 +1,7 @@
 //! Douyin web `a_bogus` generation with an explicit page/application identity.
 //! Query, body and User-Agent must exactly match the eventual request.
 
+use md5::{Digest, Md5};
 use ring::rand::SecureRandom;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -92,6 +93,74 @@ fn base36(mut value: u64) -> String {
     }
     output.reverse();
     output.into_iter().collect()
+}
+
+const WEB_SIGN_SALT: &str = "A96D855A08C0A9707F8BEF0D9A527E4E";
+
+fn decoded_query_pairs(query: &str) -> Result<Vec<(String, String)>, String> {
+    query
+        .split('&')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let (name, value) = part.split_once('=').unwrap_or((part, ""));
+            let decode = |input: &str| -> Result<String, String> {
+                percent_encoding::percent_decode_str(input)
+                    .decode_utf8()
+                    .map(|value| value.into_owned())
+                    .map_err(|_| "网页查询参数不是有效 UTF-8".into())
+            };
+            Ok((decode(name)?, decode(value)?))
+        })
+        .collect()
+}
+
+fn encode_query_pairs(pairs: &[(String, String)]) -> String {
+    pairs
+        .iter()
+        .map(|(name, value)| {
+            format!(
+                "{}={}",
+                url::form_urlencoded::byte_serialize(name.as_bytes()).collect::<String>(),
+                url::form_urlencoded::byte_serialize(value.as_bytes()).collect::<String>()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+/// Canonicalize a raw query with the WebSign URLSearchParams encoding rules.
+pub fn canonical_query(query: &str) -> Result<String, String> {
+    Ok(encode_query_pairs(&decoded_query_pairs(query)?))
+}
+
+/// Append the visitor timestamp and compute the Douyin WebSign query signature.
+pub fn web_signature(query: &str, uifid: &str, timestamp: u64) -> Result<(String, String), String> {
+    if uifid.is_empty() {
+        return Err("网页访客标识不能为空".into());
+    }
+    let mut pairs = decoded_query_pairs(query)?;
+    if pairs
+        .iter()
+        .any(|(name, value)| name == "uifid" && value != uifid)
+    {
+        return Err("网页查询参数与 Cookie 的访客标识不一致".into());
+    }
+    if pairs.iter().any(|(name, _)| name == "timestamp") {
+        return Err("网页查询参数不能覆盖 WebSign 时间戳".into());
+    }
+    if !pairs.iter().any(|(name, _)| name == "uifid") {
+        pairs.push(("uifid".into(), uifid.into()));
+    }
+    pairs.push(("timestamp".into(), timestamp.to_string()));
+    let covered = encode_query_pairs(&pairs);
+    let signature = format!(
+        "{:x}",
+        Md5::digest(format!("{uifid}_{timestamp}_{WEB_SIGN_SALT}_{covered}").as_bytes())
+    );
+    Ok((
+        format!("{covered}&x-secsdk-web-signature={signature}"),
+        signature,
+    ))
 }
 
 pub struct WebSigner {
@@ -414,6 +483,27 @@ mod tests {
             signature,
             "QJ4fhHyEm2WnCdFtmOJUeHdlq06/NBuyYzTxbN9PCxTELwFTJ8Nr/Oc6rowLsPxRRYBTh917sxUlbDVcp4UhpCnkKmkDuxkRCt5A9hmohqqgGes/LND0e0gFKwseUQJNeA91EIhRXsMN2jnR9r5MlpMay5FH5REgSNBCpMSy7EW6DSukkn3kOCkkiLNzUUIb"
         );
+    }
+
+    #[test]
+    fn web_sign_matches_the_public_reference_vector() {
+        let (query, signature) = web_signature(
+            "aid=6383&uifid=test_uifid&a_bogus=sig%2Bwith%2Fchars",
+            "test_uifid",
+            1_788_848_901,
+        )
+        .unwrap();
+        assert_eq!(signature, "06ce4e840d33306b0a4367ca0c7e718d");
+        assert_eq!(
+            query,
+            "aid=6383&uifid=test_uifid&a_bogus=sig%2Bwith%2Fchars&timestamp=1788848901&x-secsdk-web-signature=06ce4e840d33306b0a4367ca0c7e718d"
+        );
+        assert_eq!(
+            canonical_query("keyword=hello%20world&literal=visitor+id").unwrap(),
+            "keyword=hello+world&literal=visitor%2Bid"
+        );
+        assert!(web_signature("uifid=other", "test_uifid", 1).is_err());
+        assert!(web_signature("timestamp=1", "test_uifid", 1).is_err());
     }
 
     #[test]

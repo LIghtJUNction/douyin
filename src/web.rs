@@ -11,6 +11,57 @@ use url::Url;
 use crate::web_sign::WebSigner;
 
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
+const BROWSER_DETAIL_PARAMS: [(&str, &str); 28] = [
+    ("device_platform", "webapp"),
+    ("aid", "6383"),
+    ("channel", "channel_pc_web"),
+    ("update_version_code", "170400"),
+    ("pc_client_type", "1"),
+    ("pc_libra_divert", "Windows"),
+    ("version_code", "190500"),
+    ("version_name", "19.5.0"),
+    ("cookie_enabled", "true"),
+    ("screen_width", "1920"),
+    ("screen_height", "1080"),
+    ("browser_language", "zh-CN"),
+    ("browser_platform", "Win32"),
+    ("browser_name", "Chrome"),
+    ("browser_version", "125.0.0.0"),
+    ("browser_online", "true"),
+    ("engine_name", "Blink"),
+    ("engine_version", "125.0.0.0"),
+    ("os_name", "Windows"),
+    ("os_version", "10"),
+    ("cpu_core_num", "16"),
+    ("device_memory", "8"),
+    ("platform", "PC"),
+    ("downlink", "10"),
+    ("effective_type", "4g"),
+    ("round_trip_time", "50"),
+    ("support_h265", "1"),
+    ("support_dash", "1"),
+];
+
+fn cookie_value<'a>(cookie: Option<&'a str>, names: &[&str]) -> Option<&'a str> {
+    names.iter().find_map(|expected| {
+        cookie?.split(';').find_map(|pair| {
+            let (name, value) = pair.trim().split_once('=')?;
+            (name == *expected && !value.is_empty()).then_some(value)
+        })
+    })
+}
+
+fn route_detail(url: &mut Url) -> Result<bool, String> {
+    if url.path() != "/aweme/v1/aweme/detail/" {
+        return Ok(false);
+    }
+    url.set_path("/aweme/v1/web/aweme/detail/");
+    if url.host_str() == Some("aweme.snssdk.com") {
+        url.set_host(Some("www.douyin.com"))
+            .map_err(|_| "网页详情主机无效")?;
+    }
+    Ok(true)
+}
 
 pub(crate) fn request(
     method: Method,
@@ -18,6 +69,7 @@ pub(crate) fn request(
     params: &[(String, String)],
     form: Option<&[(String, String)]>,
 ) -> Result<Value, String> {
+    let browser_detail = route_detail(&mut url)?;
     if let Ok(host) = std::env::var("DOUYIN_WEB_HOST") {
         if !matches!(host.as_str(), "www.douyin.com" | "aweme.snssdk.com") {
             return Err("DOUYIN_WEB_HOST 仅支持 www.douyin.com 或 aweme.snssdk.com".into());
@@ -25,10 +77,33 @@ pub(crate) fn request(
         url.set_host(Some(&host)).map_err(|_| "网页主机配置无效")?;
     }
     let cookie = crate::cookie::load()?;
+    let uifid = if browser_detail {
+        Some(
+            cookie_value(
+                cookie.as_deref(),
+                &[
+                    "uifid",
+                    "uifid_temp",
+                    "uifidtemp",
+                    "UIFID",
+                    "UIFID_TEMP",
+                    "UIFIDTEMP",
+                ],
+            )
+            .filter(|value| value.len() >= 32)
+            .ok_or("网页作品详情需要 Cookie 中有效的 UIFID 访客标识，请重新登录或更新 Cookie")?
+            .to_owned(),
+        )
+    } else {
+        None
+    };
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| "系统时间无效")?
         .as_millis() as u64;
+    let verify_fp = cookie_value(cookie.as_deref(), &["s_v_web_id"])
+        .map(str::to_owned)
+        .unwrap_or_else(|| crate::web_sign::generate_verify_fp(timestamp));
     let body = form.map(|fields| {
         url::form_urlencoded::Serializer::new(String::new())
             .extend_pairs(
@@ -38,14 +113,26 @@ pub(crate) fn request(
             )
             .finish()
     });
-    url.query_pairs_mut()
+    let mut query = url.query_pairs_mut();
+    if browser_detail {
+        query.extend_pairs(BROWSER_DETAIL_PARAMS);
+    }
+    if let Some(uifid) = &uifid {
+        query.append_pair("uifid", uifid);
+    }
+    query
         .extend_pairs(
             params
                 .iter()
                 .map(|(key, value)| (key.as_str(), value.as_str())),
         )
         .append_pair("msToken", &crate::web_sign::generate_ms_token(107))
-        .append_pair("verifyFp", &crate::web_sign::generate_verify_fp(timestamp));
+        .append_pair("verifyFp", &verify_fp);
+    drop(query);
+    if uifid.is_some() {
+        let canonical = crate::web_sign::canonical_query(url.query().unwrap_or(""))?;
+        url.set_query(Some(&canonical));
+    }
     let signature = WebSigner::default().sign(
         url.query().unwrap_or(""),
         body.as_deref().unwrap_or(""),
@@ -53,6 +140,15 @@ pub(crate) fn request(
         timestamp,
     );
     url.query_pairs_mut().append_pair("a_bogus", &signature);
+    let web_sign = if let Some(uifid) = &uifid {
+        let timestamp = timestamp / 1000;
+        let (query, signature) =
+            crate::web_sign::web_signature(url.query().unwrap_or(""), uifid, timestamp)?;
+        url.set_query(Some(&query));
+        Some((signature, timestamp))
+    } else {
+        None
+    };
 
     let client = Client::builder()
         .redirect(Policy::none())
@@ -65,7 +161,16 @@ pub(crate) fn request(
         .header("User-Agent", USER_AGENT)
         .header("Accept", "application/json")
         .header("Accept-Encoding", "gzip, deflate")
-        .header("x-ss-req-ticket", timestamp.to_string());
+        .header("Accept-Language", "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7")
+        .header("Referer", "https://www.douyin.com/");
+    if let (Some(uifid), Some((signature, timestamp))) = (&uifid, &web_sign) {
+        let mut visitor = HeaderValue::from_str(uifid).map_err(|_| "网页访客标识格式无效")?;
+        visitor.set_sensitive(true);
+        request = request
+            .header("uifid", visitor)
+            .header("x-secsdk-web-signature", signature)
+            .header("x-secsdk-web-expire", timestamp.to_string());
+    }
     if let Some(cookie) = cookie.filter(|value| !value.trim().is_empty()) {
         let mut value = HeaderValue::from_str(&cookie).map_err(|_| "网页 Cookie 请求头无效")?;
         value.set_sensitive(true);
@@ -131,6 +236,72 @@ mod tests {
     use std::sync::{Mutex, mpsc};
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn routes_only_native_detail_to_the_browser_endpoint() {
+        let mut detail = Url::parse("https://aweme.snssdk.com/aweme/v1/aweme/detail/").unwrap();
+        assert!(route_detail(&mut detail).unwrap());
+        assert_eq!(detail.host_str(), Some("www.douyin.com"));
+        assert_eq!(detail.path(), "/aweme/v1/web/aweme/detail/");
+
+        let mut search = Url::parse("https://aweme.snssdk.com/aweme/v2/search_feed/").unwrap();
+        assert!(!route_detail(&mut search).unwrap());
+        assert_eq!(search.host_str(), Some("aweme.snssdk.com"));
+        assert_eq!(search.path(), "/aweme/v2/search_feed/");
+    }
+
+    #[test]
+    fn signs_browser_detail_with_the_cookie_visitor_identity() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        crate::store::save_at(
+            &home.path().join("cookie.json"),
+            &serde_json::json!({"cookie":"ttwid=fixture; UIFID_TEMP=0123456789abcdef0123456789abcdef; s_v_web_id=verify_fixture"}),
+        )
+        .unwrap();
+        unsafe { std::env::set_var("DOUYIN_HOME", home.path()) };
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let address = server.server_addr();
+        let server_thread = std::thread::spawn(move || {
+            let request = server.recv().unwrap();
+            let target = request.url().to_string();
+            for required in [
+                "/aweme/v1/web/aweme/detail/",
+                "aweme_id=7698380132884519355",
+                "uifid=0123456789abcdef0123456789abcdef",
+                "verifyFp=verify_fixture",
+                "a_bogus=",
+                "timestamp=",
+                "x-secsdk-web-signature=",
+            ] {
+                assert!(target.contains(required), "missing {required}");
+            }
+            assert_eq!(
+                request
+                    .headers()
+                    .iter()
+                    .find(|header| header.field.equiv("uifid"))
+                    .map(|header| header.value.as_str()),
+                Some("0123456789abcdef0123456789abcdef")
+            );
+            request
+                .respond(tiny_http::Response::from_string(
+                    r#"{"status_code":0,"aweme_detail":{}}"#,
+                ))
+                .unwrap();
+        });
+        let url = Url::parse(&format!("http://{address}/aweme/v1/aweme/detail/")).unwrap();
+        let value = request(
+            Method::GET,
+            url,
+            &[("aweme_id".into(), "7698380132884519355".into())],
+            None,
+        )
+        .unwrap();
+        assert_eq!(value["status_code"], 0);
+        server_thread.join().unwrap();
+        unsafe { std::env::remove_var("DOUYIN_HOME") };
+    }
 
     #[test]
     fn signs_and_sends_the_exact_form_and_parses_the_response() {

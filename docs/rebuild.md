@@ -242,3 +242,4 @@
 
 - 网页模式评论 `--with-replies --reply-limit 1 --format chatml-jsonl` 也已实测通过，主评论与回复均可导出。作品详情与 X-Bogus 对照仍为空响应，未把多余签名参数保留在生产路径。
 - 新增网页传输本地 HTTP 端到端测试，核对最终 query 中的 a_bogus/msToken/verifyFp、表单原文和 JSON 业务状态解析，128 项测试通过。
+- 修复网页 GET 查询参数丢失，并按公开 secsdk-strategy v1.0.40 实现作品详情的 `/aweme/v1/web/aweme/detail/` 路由、浏览器公共参数、URLSearchParams 规范化及 `uifid`/秒级 `timestamp`/`x-secsdk-web-signature`；WebSign 固定公开向量与本地端到端请求通过。当前旧 Cookie 不含有效 UIFID，真实详情验收明确提示更新 Cookie，未再发送必然 403 的请求；搜索回归仍保存 1 条。131 项本地测试通过。
