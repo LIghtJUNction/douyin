@@ -78,11 +78,15 @@ pub fn run(args: CrawlArgs) -> Result<(), String> {
                 .to_possible_value()
                 .map(|v| v.get_name().to_owned())
                 .unwrap_or_default();
-            let archive_id = if id.is_empty() {
-                client.account_id()?
-            } else {
-                &id
-            };
+            let archive_id =
+                if id.is_empty() && args.crawl_type == CrawlType::Feed && client.is_web_transport()
+                {
+                    "feed"
+                } else if id.is_empty() {
+                    client.account_id()?
+                } else {
+                    &id
+                };
             data["target"] = json!({"type":kind,"id":archive_id});
             let filename = format!("{}_{}.json", kind, crate::download::filename(archive_id));
             let path = args.output_path.join(filename);
@@ -140,7 +144,11 @@ fn fetch(
             .ok_or("接口没有返回作品详情")?;
         return Ok(json!({"items":[item],"has_more":false,"pages":1}));
     }
-    let target = if target.is_empty() {
+    let web_feed = kind == CrawlType::Feed && client.is_web_transport();
+    if web_feed && args.limit == 0 {
+        return Err("网页 Feed 必须使用 --limit 指定有限采集数量".into());
+    }
+    let target = if target.is_empty() && !web_feed {
         client.account_sec_id()?
     } else {
         target
@@ -233,25 +241,62 @@ fn fetch(
             CrawlType::Feed => (
                 "/aweme/v1/feed/",
                 "aweme_list",
-                "max_cursor",
+                if web_feed {
+                    "refresh_index"
+                } else {
+                    "max_cursor"
+                },
                 "max_cursor",
                 "sec_user_id",
             ),
             CrawlType::Aweme => return Err("单作品类型不使用列表分页".into()),
         };
+        let request_position = if web_feed {
+            cursor
+                .parse::<u64>()
+                .ok()
+                .and_then(|index| index.checked_add(1))
+                .ok_or("网页 Feed 批次号无效")?
+                .to_string()
+        } else {
+            cursor.into()
+        };
         let mut params = vec![
-            (request_cursor.into(), cursor.into()),
+            (request_cursor.into(), request_position),
             ("count".into(), remaining.unwrap_or(20).min(20).to_string()),
         ];
-        if target.bytes().all(|b| b.is_ascii_digit())
-            && matches!(
-                kind,
-                CrawlType::Post | CrawlType::Favorite | CrawlType::Following | CrawlType::Follower
-            )
-        {
-            params.push(("user_id".into(), target.into()));
-        } else {
-            params.push((id_key.into(), target.into()));
+        if !(kind == CrawlType::Feed && target.is_empty()) {
+            if target.bytes().all(|b| b.is_ascii_digit())
+                && matches!(
+                    kind,
+                    CrawlType::Post
+                        | CrawlType::Favorite
+                        | CrawlType::Following
+                        | CrawlType::Follower
+                )
+            {
+                params.push(("user_id".into(), target.into()));
+            } else {
+                params.push((id_key.into(), target.into()));
+            }
+        }
+        if web_feed {
+            params.extend(
+                [
+                    ("tag_id", ""),
+                    ("share_aweme_id", ""),
+                    ("live_insert_type", ""),
+                    ("video_type_select", "1"),
+                    ("aweme_pc_rec_raw_data", "{\"is_client\":\"false\"}"),
+                    ("globalwid", ""),
+                    ("pull_type", ""),
+                    ("min_window", ""),
+                    ("free_right", ""),
+                    ("ug_source", ""),
+                    ("creative_id", ""),
+                ]
+                .map(|(key, value)| (key.into(), value.into())),
+            );
         }
         if matches!(kind, CrawlType::Following | CrawlType::Follower) {
             params.push(("min_time".into(), "0".into()));
@@ -287,11 +332,19 @@ fn fetch(
                 params.push(("filter_duration".into(), duration.clone()));
             }
         }
-        let response = if kind == CrawlType::Search {
+        let mut response = if kind == CrawlType::Search {
             client.post(path, &params)?
         } else {
             client.get(path, &params)?
         };
+        if web_feed {
+            let next = cursor
+                .parse::<u64>()
+                .ok()
+                .and_then(|index| index.checked_add(1))
+                .ok_or("网页 Feed 批次号无效")?;
+            response["max_cursor"] = json!(next.to_string());
+        }
         if let Some(id) = response["log_pb"]["impr_id"].as_str() {
             search_id = id.to_owned();
         }
