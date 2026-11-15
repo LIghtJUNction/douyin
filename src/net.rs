@@ -108,7 +108,7 @@ impl NativeClient {
         form: Option<&[(String, String)]>,
     ) -> Result<Value, String> {
         if self.mode == "web" {
-            return crate::web::request(method, url, form);
+            return crate::web::request(method, url, params, form);
         }
         let identity = auth::request_identity(&self.session)?;
         if params.iter().any(|(key, _)| {

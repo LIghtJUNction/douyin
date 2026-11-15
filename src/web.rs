@@ -15,6 +15,7 @@ const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
 pub(crate) fn request(
     method: Method,
     mut url: Url,
+    params: &[(String, String)],
     form: Option<&[(String, String)]>,
 ) -> Result<Value, String> {
     if let Ok(host) = std::env::var("DOUYIN_WEB_HOST") {
@@ -38,6 +39,11 @@ pub(crate) fn request(
             .finish()
     });
     url.query_pairs_mut()
+        .extend_pairs(
+            params
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.as_str())),
+        )
         .append_pair("msToken", &crate::web_sign::generate_ms_token(107))
         .append_pair("verifyFp", &crate::web_sign::generate_verify_fp(timestamp));
     let signature = WebSigner::default().sign(
@@ -142,7 +148,13 @@ mod tests {
         let server_thread = std::thread::spawn(move || {
             let mut request = server.recv().unwrap();
             let target = request.url().to_string();
-            for required in ["a_bogus=", "msToken=", "verifyFp=", "a=1"] {
+            for required in [
+                "a_bogus=",
+                "msToken=",
+                "verifyFp=",
+                "a=1",
+                "aweme_id=7698380132884519355",
+            ] {
                 assert!(target.contains(required), "missing {required}");
             }
             let mut body = String::new();
@@ -154,7 +166,13 @@ mod tests {
             request.respond(response).unwrap();
         });
         let url = Url::parse(&format!("http://{address}/aweme/v2/search_feed/?a=1")).unwrap();
-        let value = request(Method::POST, url, Some(&[("a".into(), "b".into())])).unwrap();
+        let value = request(
+            Method::POST,
+            url,
+            &[("aweme_id".into(), "7698380132884519355".into())],
+            Some(&[("a".into(), "b".into())]),
+        )
+        .unwrap();
         assert_eq!(value["status_code"], 0);
         assert_eq!(receiver.recv().unwrap(), "a=b");
         server_thread.join().unwrap();
