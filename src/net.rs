@@ -25,20 +25,25 @@ pub struct NativeClient {
 
 impl NativeClient {
     pub fn saved() -> Result<Self, String> {
-        let session = store::load()?;
-        auth::validate_session(&session)?;
+        let mode = std::env::var("DOUYIN_NATIVE_TRANSPORT").unwrap_or_else(|_| "direct".into());
+        let session = if mode == "web" {
+            match store::load() {
+                Ok(session) => session,
+                Err(_) => serde_json::json!({}),
+            }
+        } else {
+            let session = store::load()?;
+            auth::validate_session(&session)?;
+            session
+        };
         let client = Client::builder()
             .redirect(Policy::none())
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(30))
             .build()
             .map_err(|_| "无法创建抖音请求客户端")?;
-        let mode = std::env::var("DOUYIN_NATIVE_TRANSPORT").unwrap_or_else(|_| "direct".into());
-        if !matches!(mode.as_str(), "direct" | "phone" | "duckemu") {
-            return Err(
-                "DOUYIN_NATIVE_TRANSPORT 仅支持 direct、duckemu（本地仿真）或 phone（协议调试）"
-                    .into(),
-            );
+        if !matches!(mode.as_str(), "direct" | "phone" | "duckemu" | "web") {
+            return Err("DOUYIN_NATIVE_TRANSPORT 仅支持 direct、web、duckemu 或 phone".into());
         }
         Ok(Self {
             client,
@@ -102,6 +107,9 @@ impl NativeClient {
         params: &[(String, String)],
         form: Option<&[(String, String)]>,
     ) -> Result<Value, String> {
+        if self.mode == "web" {
+            return crate::web::request(method, url, form);
+        }
         let identity = auth::request_identity(&self.session)?;
         if params.iter().any(|(key, _)| {
             matches!(key.as_str(), "ts" | "_rticket")
@@ -482,7 +490,7 @@ pub(crate) fn truthy(value: &Value) -> bool {
         .unwrap_or_else(|| integer(value).is_some_and(|n| n != 0))
 }
 
-fn check_response(value: &Value) -> Result<(), String> {
+pub(crate) fn check_response(value: &Value) -> Result<(), String> {
     if value["search_nil_info"]["search_nil_type"] == "antispam_check"
         || value["search_nil_info"]["search_nil_item"] == "hit_shark"
     {

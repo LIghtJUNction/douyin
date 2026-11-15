@@ -30,7 +30,7 @@ cargo install --path . --locked
 douyin --version
 ```
 
-Require Rust 1.100+ using `rust-toolchain.toml`. The deliberately deleted implementation must not be restored. The webpage Cookie backend and signer are still being rebuilt; do not claim they work because Cookie configuration commands exist.
+Require Rust 1.100+ using `rust-toolchain.toml`. The deliberately deleted implementation must not be restored. The webpage Cookie backend now supports `DOUYIN_NATIVE_TRANSPORT=web` with a_bogus, msToken and verifyFp. Main-site fixed Python vectors and real search/comment requests pass; aweme detail and user posts remain unverified. `DOUYIN_WEB_HOST` is limited to www.douyin.com or aweme.snssdk.com.
 
 ## Route Authentication
 

@@ -238,3 +238,9 @@ Field 13 是 Medusa 消息的一个字段，不是完整 X-Medusa。消息其余
 评论的 `--with-replies --reply-limit 1 --format chatml-jsonl` 也已通过真实接口验收，导出包含主评论、真实回复及用户元数据。使用搜索结果中的公开封面 URL 完成 CDN 下载，产物为 ISO Media；`stats` 与 `insights` 离线命令均完成运行。临时签名服务已关闭，默认登录配置未修改。
 
 新增 MCP 原生只读工具 `native_search`、`native_aweme`、`native_comments`、`native_comment_replies`、`native_user_posts`，复用同一 NativeClient 和 DuckDroid2 会话，单页数量限制为 1..=20。真实 stdio 调用全部成功，覆盖搜索结果、作品详情、评论、回复和用户作品；124 项项目测试通过。
+
+## 网页 Cookie 与 a_bogus
+
+新增 `DOUYIN_NATIVE_TRANSPORT=web`，按公开 Python 参考实现重建主站 a_bogus：`page_id=6241`、`aid=6383`、SM3 摘要链、RC4、环境字段和最终编码。固定随机序列输出与 Python 完全一致。请求同时生成 msToken 和 verifyFp，POST 使用精确正文 MD5。cookie.json 与 Android session.json 分离，缺少原生会话也可执行公开采集。
+
+搜索与评论各保存 1 条，作品详情仍返回空响应，用户作品需要原生账号上下文，均未扩大为全接口成功。`DOUYIN_WEB_HOST` 仅允许 `www.douyin.com` 与 `aweme.snssdk.com`。126 项项目测试通过。

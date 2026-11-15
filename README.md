@@ -10,7 +10,7 @@
 
 - `auth --adb` 导入原生 Token，核对账号、设备 ID、安装 ID 和应用版本；导入过程中标识变化就拒绝保存。
 - 导入后断开手机、不带 WebView Cookie，账号验证、个人资料、关注列表和直播配置查询都已实测通过；直播配置查询也跑过实际 MCP 调用。
-- 本地 124 项 Rust 测试、Clippy、release 构建和打包校验通过。OBS 目前只验过本地联动，真实推流和直播画面还没验收。
+- 本地 126 项 Rust 测试、Clippy、release 构建和打包校验通过。OBS 目前只验过本地联动，真实推流和直播画面还没验收。
 
 搜索、完整签名、手机身份开播，以及手机端其余功能还在做。下面写的是当前源码的用法，不能把它当成已发布版本的功能清单。
 
@@ -133,7 +133,7 @@ douyin auth cookie-status
 douyin auth cookie-logout
 ```
 
-也支持 `--cookie` 和 `DOUYIN_COOKIE`。保存时只检查格式，`--offline` 也只检查格式；联网检查成功才确认网页登录态。Cookie 管理已经补回，网页采集后端还在接。
+也支持 `--cookie` 和 `DOUYIN_COOKIE`。保存时只检查格式，`--offline` 也只检查格式；联网检查成功才确认网页登录态。Cookie 管理和网页采集后端已补回。`DOUYIN_NATIVE_TRANSPORT=web` 使用 `cookie.json` 与主站 `a_bogus` 签名，已实测搜索和评论；作品详情与用户作品仍待验收。可用 `DOUYIN_WEB_HOST=aweme.snssdk.com` 切换受支持主机。
 
 ## 直播配置和 OBS 联动
 

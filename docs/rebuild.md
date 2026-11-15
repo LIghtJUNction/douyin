@@ -237,3 +237,5 @@
 - 新增 `tools/prepare-duckemu.sh`，自动克隆 DuckDroid2、构建、下载并校验官方 ROM、提取系统库，已有文件和构建会复用。已在现有 DuckDroid2 与 ROM 上实际执行成功，配合 start-duckemu.sh 完成一键准备和启动。
 
 - 新增 MCP 原生只读工具 `native_search`、`native_aweme`、`native_comments`、`native_comment_replies`、`native_user_posts`，复用 NativeClient 且单页数量限制为 1..=20。通过真实 stdio 分别调用成功，返回搜索结果、作品详情、评论、回复和用户作品；124 项本地测试通过。
+
+- 新增网页 Cookie 后端 `DOUYIN_NATIVE_TRANSPORT=web`，实现主站 a_bogus（page_id=6241、aid=6383）、msToken、verifyFp、正文 MD5 和 cookie.json 独立加载；没有原生 session.json 时也可发起公开采集。主站固定 Python 向量逐字节一致，搜索和评论各保存 1 条，作品详情仍返回空响应，用户作品仍需要原生账号上下文。126 项本地测试通过。`DOUYIN_WEB_HOST` 仅允许 www.douyin.com 或 aweme.snssdk.com。
