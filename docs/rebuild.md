@@ -233,3 +233,5 @@
 - 继续真实 DuckDroid2 验收，新增 feed、music、hashtag、mix 各保存 1 条。话题实际响应使用 `mix_list[*].aweme_info`，已接入该列表与展平；分页允许最多连续 10 个空页但有新游标，重复游标仍拒绝，123 项本地测试通过。收藏、关注和粉丝在当前公开参考身份下分别返回 3002279、8 或空响应，按需要有效登录态处理。公开 live info 在当前网络对多个房间均返回空响应，未记为通过；仅允许该固定路径的仿真签名和空 Cookie 查询，直播权限仍保持 direct。
 
 - 继续验收评论 `--with-replies --reply-limit 1 --format chatml-jsonl`，实际导出主评论和一条真实回复及用户元数据。使用搜索结果的公开封面 URL 完成 CDN 下载，文件为 ISO Media；`stats` 和 `insights` 离线命令均可执行。临时签名服务关闭，未修改默认登录配置。
+
+- 新增 `tools/prepare-duckemu.sh`，自动克隆 DuckDroid2、构建、下载并校验官方 ROM、提取系统库，已有文件和构建会复用。已在现有 DuckDroid2 与 ROM 上实际执行成功，配合 start-duckemu.sh 完成一键准备和启动。
