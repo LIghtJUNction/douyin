@@ -221,3 +221,5 @@
 - 使用同一公开仓库的提取器对本地固定库重新静态提取，10 个模块全部恢复且无未解析 IR；仅在 target/research 隔离环境安装 Capstone/pyelftools，未加载原生库或访问手机。随后按同版本官方抓帧和 SsInterceptor 证据，为 aweme.snssdk.com 的独立 Token 验证与通用 GET 增加 x-ss-req-ticket 毫秒时间戳，每次传输重试重新取时；Webcast 固定权限端点不变。109 项本地测试通过。这只是已核对传输头，不是完整签名或新增实机验收。
 
 - 继续通过 gh 找到许可兼容的 sunnysky123/hongguo-web pure-sign.js（MIT 仓库，算法源头标注 GPL-3.0），以其公开实现生成黄金向量，未采用另一份 PolyForm 非商业许可代码。新增 metasec::field13，完整实现 SM3(query)、MD5(body)/零摘要、分支选择、重量级 112 轮路径、36 字节直通路径及变种 MD5 路径。9 组合成向量覆盖全部三个分支，输出逐字节一致；新增 sm3 依赖，112 项本地测试通过。该字段尚未组装成完整 Medusa，也未接入生产请求。真实 auth status 显示当前保存登录未获服务端确认，本轮未进行已认证搜索验收。
+
+- 继续从同一许可兼容实现提取 Gorgon 与 Medusa 外层向量。新增 metasec::gorgon，query/body 摘要、显式 SDK 版本字、RC4 变体和位处理均匹配 GET/POST 固定输出；新增签名 Protobuf 编码器，覆盖字段顺序、ZigZag、浮点和嵌套消息；新增 metasec::envelope 的 xmxor、SM3 keyHash 与短输入错误。115 项本地测试通过。目标 40.8 的 SDK 版本字、消息字段和 AesV3 封装仍须分别核对，未接入生产请求。

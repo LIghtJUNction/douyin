@@ -198,3 +198,11 @@ g3.run 转入 LIZ：当 LJIILL 回调存在且主设备字段 LIZJ 为空时，�
 `metasec::field13` 现支持原始 query 的 SM3、可选正文的 MD5（缺省为 16 字节零）、分支选择，以及全部三种输出：重量级分支的 112 轮消息扩展与查表轮函数、直通分支的 36 字节拼接、变种 MD5 分支的 64 轮压缩和校验和。公开实现生成 9 组固定合成向量，三个分支各三组，Rust 输出逐字节一致；SM3 另通过 `abc` 标准向量。
 
 Field 13 是 Medusa 消息的一个字段，不是完整 X-Medusa。消息其余字段、SDK 会话、外层加密和最终六头合并仍需继续恢复。当前保存的登录态未通过服务端状态检查，本轮没有完成已认证搜索验收。112 项项目测试通过。
+
+## Gorgon、Protobuf 与外层变换
+
+`metasec::gorgon` 实现 query/body MD5 前缀、显式 SDK 版本字、请求 nonce 密钥、RC4 变体和位反转后处理；GET 与 POST 固定向量均与公开实现一致。调用方必须提供当前版本 SDK 字，不把红果或其他版本的常量硬编码为抖音 40.8 配置。
+
+`metasec::protobuf` 提供签名消息所需的 bytes/string/signed/unsigned/float/message 编码，保留字段顺序、ZigZag 和嵌套消息，不重排 query。`metasec::envelope` 实现 Medusa 的 `xmxor` 与 `sign_key || LE32(nonce) || sign_key` SM3 `keyHash`，返回外层掩码；短输入会显式报错。固定 `xmxor`、SM3 key 和 seed 向量均匹配公开实现。
+
+这些函数仍未提供目标版本的消息字段、AesV3 封装或真实 SDK 会话，也未接入生产请求。115 项项目测试通过。
