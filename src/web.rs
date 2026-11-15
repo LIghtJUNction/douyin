@@ -99,7 +99,12 @@ pub(crate) fn request(
             url.set_host(Some(&host)).map_err(|_| "网页主机配置无效")?;
         }
     }
-    let cookie = crate::cookie::load()?;
+    let live_browser = url.host_str() == Some("live.douyin.com");
+    let cookie = if browser_route || live_browser {
+        Some(crate::cookie::ensure_guest()?)
+    } else {
+        crate::cookie::load()?
+    };
     let uifid = if web_sign_required {
         Some(
             cookie_value(
@@ -126,7 +131,7 @@ pub(crate) fn request(
         .as_millis() as u64;
     let verify_fp = cookie_value(cookie.as_deref(), &["s_v_web_id"])
         .map(str::to_owned)
-        .unwrap_or_else(|| crate::web_sign::generate_verify_fp(timestamp));
+        .or_else(|| (!web_sign_required).then(|| crate::web_sign::generate_verify_fp(timestamp)));
     let body = form.map(|fields| {
         url::form_urlencoded::Serializer::new(String::new())
             .extend_pairs(
@@ -149,8 +154,13 @@ pub(crate) fn request(
                 .iter()
                 .map(|(key, value)| (key.as_str(), value.as_str())),
         )
-        .append_pair("msToken", &crate::web_sign::generate_ms_token(107))
-        .append_pair("verifyFp", &verify_fp);
+        .append_pair("msToken", &crate::web_sign::generate_ms_token(107));
+    if let Some(verify_fp) = &verify_fp {
+        query.append_pair("verifyFp", verify_fp);
+        if web_sign_required {
+            query.append_pair("fp", verify_fp);
+        }
+    }
     drop(query);
     if uifid.is_some() {
         let canonical = crate::web_sign::canonical_query(url.query().unwrap_or(""))?;
@@ -191,6 +201,9 @@ pub(crate) fn request(
         .header("Accept-Encoding", "gzip, deflate")
         .header("Accept-Language", "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7")
         .header("Referer", referer);
+    if web_sign_required {
+        request = request.header("x-tt-argus", "1");
+    }
     if let (Some(uifid), Some((signature, timestamp))) = (&uifid, &web_sign) {
         let mut visitor = HeaderValue::from_str(uifid).map_err(|_| "网页访客标识格式无效")?;
         visitor.set_sensitive(true);

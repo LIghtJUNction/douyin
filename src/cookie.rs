@@ -94,6 +94,113 @@ pub fn login(args: LoginArgs) -> Result<Value, String> {
     Ok(summary(Some(&cookies), false))
 }
 
+fn visitor_cookie_valid(header: &str) -> bool {
+    parse(header).is_ok_and(|cookies| {
+        cookies.get("ttwid").is_some_and(|value| !value.is_empty())
+            && [
+                "uifid",
+                "uifid_temp",
+                "uifidtemp",
+                "UIFID",
+                "UIFID_TEMP",
+                "UIFIDTEMP",
+            ]
+            .iter()
+            .any(|name| cookies.get(*name).is_some_and(|value| value.len() >= 32))
+    })
+}
+
+fn merge_guest_cookies(
+    existing: Option<&str>,
+    offered: &[(String, String)],
+) -> Result<String, String> {
+    let mut cookies = existing.map(parse).transpose()?.unwrap_or_default();
+    if ["sessionid", "sessionid_ss"]
+        .iter()
+        .any(|name| cookies.contains_key(*name))
+    {
+        return Err(
+            "登录 Cookie 缺少 UIFID，请从同一浏览器会话重新导出，不能与匿名访客身份混用".into(),
+        );
+    }
+    for (name, value) in offered {
+        if matches!(name.as_str(), "ttwid" | "UIFID_TEMP" | "s_v_web_id") {
+            cookies.insert(name.clone(), value.clone());
+        }
+    }
+    let header = cookies
+        .iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    if !visitor_cookie_valid(&header) {
+        return Err("直播首页未下发完整的 ttwid 和 UIFID_TEMP 访客身份".into());
+    }
+    Ok(header)
+}
+
+/// Load or mint a browser visitor identity without confusing it with account login.
+pub fn ensure_guest() -> Result<String, String> {
+    let existing = load()?;
+    if let Some(header) = existing
+        .as_deref()
+        .filter(|header| visitor_cookie_valid(header))
+    {
+        return Ok(header.to_owned());
+    }
+    if existing
+        .as_deref()
+        .map(parse)
+        .transpose()?
+        .is_some_and(|cookies| {
+            ["sessionid", "sessionid_ss"]
+                .iter()
+                .any(|name| cookies.contains_key(*name))
+        })
+    {
+        return Err(
+            "登录 Cookie 缺少 UIFID，请从同一浏览器会话重新导出，不能与匿名访客身份混用".into(),
+        );
+    }
+    let client = reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|_| "无法创建网页访客身份客户端")?;
+    let response = client
+        .get("https://live.douyin.com/")
+        .header(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        )
+        .header("Accept-Language", "zh-CN,zh;q=0.9")
+        .send()
+        .map_err(|_| "获取网页访客身份失败或超时")?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "网页访客身份接口返回 HTTP {}",
+            response.status().as_u16()
+        ));
+    }
+    let offered = response
+        .headers()
+        .get_all(reqwest::header::SET_COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .filter_map(|value| value.split(';').next())
+        .filter_map(|pair| pair.split_once('='))
+        .map(|(name, value)| (name.to_owned(), value.to_owned()))
+        .collect::<Vec<_>>();
+    let header = merge_guest_cookies(existing.as_deref(), &offered)?;
+    store::save_at(
+        &store::root().join("cookie.json"),
+        &json!({"cookie":header}),
+    )
+    .map_err(|_| "无法安全保存网页访客 Cookie")?;
+    Ok(header)
+}
+
 pub fn load() -> Result<Option<String>, String> {
     for (path, legacy) in [
         (store::root().join("cookie.json"), false),
@@ -212,6 +319,26 @@ mod tests {
             assert!(parse(bad).is_err());
         }
     }
+    #[test]
+    fn merges_only_complete_anonymous_visitor_identities() {
+        let offered = vec![
+            ("ttwid".into(), "visitor-ttwid".into()),
+            (
+                "UIFID_TEMP".into(),
+                "0123456789abcdef0123456789abcdef".into(),
+            ),
+            ("ignored".into(), "private-fixture".into()),
+        ];
+        let header = merge_guest_cookies(Some("ttwid=old; odin_tt=public"), &offered).unwrap();
+        let cookies = parse(&header).unwrap();
+        assert_eq!(cookies["odin_tt"], "public");
+        assert_eq!(cookies["UIFID_TEMP"].len(), 32);
+        assert!(!cookies.contains_key("ignored"));
+        assert!(merge_guest_cookies(Some("ttwid=old"), &[]).is_err());
+        let error = merge_guest_cookies(Some("sessionid=private-fixture"), &offered).unwrap_err();
+        assert!(!error.contains("private-fixture"));
+    }
+
     #[test]
     fn requires_explicit_login_evidence_and_hides_response_bodies() {
         assert!(parse_probe(br#"{"has_login":true}"#).unwrap());
