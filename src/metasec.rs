@@ -1,6 +1,10 @@
 //! Public APK constant decoding, reconstructed from the pinned 40.8.0 fixtures.
 //! This does not initialize Metasec or sign HTTP requests.
 
+pub mod digest;
+pub mod helios;
+pub mod speck;
+
 use serde_json::Value;
 
 /// Configuration layout of the pinned APK's `ms.bd.c.u2` Java model.

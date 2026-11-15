@@ -36,6 +36,7 @@ rmcp = { version = "3.10.0", default-features = false, features = ["server", "tr
 tokio = { version = "1.54.1", features = ["rt", "io-std", "time"] }
 frida = { version = "0.17.2", features = ["auto-download"] }
 lzma-rust2 = { version = "0.25.0", default-features = false, features = ["std", "xz"] }
+md-5 = "0.10.6"
 obws = "0.15.0"
 
 [profile.release]

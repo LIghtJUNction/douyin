@@ -174,3 +174,13 @@ g3.run 转入 LIZ：当 LJIILL 回调存在且主设备字段 LIZJ 为空时，�
 实机纯 Java 验收使用 tools/MetasecWireProbe.java 与独立父加载器版本占位类；先校验固定 APK SHA-256，再确认真正 u2 序列化器来自 APK。u2 是抽象类，因此只通过 X.0mVm 的基类构造初始化假对象，包装引用为 null。版本占位类避免触发原始 s4 的 native 静态初始化；没有初始化应用或加载 SDK 原生库，也没有账号或网络调用。反射仅修改新建的假对象，未访问真实应用进程。首次抽象类实例化及反射访问失败后已修正，最终两个样本均成功。
 
 公开假数据保存为 assets/metasec-fixtures/config-wire.json。Rust 对比默认 17 项数组及配置样本完整 JSON 字节，后者覆盖有符号整型边界、null/空/空白键、数字/布尔/null 值、NBSP、全部 ASCII 控制字符、斜杠、反斜杠及 U+2028/U+2029。手机临时 DEX 均清理，未修改临时目录权限。此验收不涉及原生初始化、请求签名或直播。102 项项目测试通过。
+
+## Rust 摘要与 Helios 部件
+
+通过 GitHub 代码检索定位到 [ShuaiLeiLu/DY_luckybag](https://github.com/ShuaiLeiLu/DY_luckybag/tree/d0fb0bd85b4c83b94b5bb0e16f7a792a06748a12) 的公开研究。其固定 `libmetasec_ml.so` SHA-256 与本项目相同，且恢复了相同模块中的 Medusa、Speck 和 Helios 算术。参考仓库未声明许可证，因此没有复制其源码；Rust 实现只使用算法事实、公开参数与合成测试向量。
+
+`metasec::digest` 实现模块 `0x4420f0` 的 64 轮压缩、非标准填充、16 字节摘要、增量更新和 8/12 字节输入对应的尾部计算，并实现已恢复 Argus 路径的单个小端时间字 Base64 编码。摘要的 F1/F0 后续 SDK 状态位没有伪造，16/20 字节结果不能直接当成最终 X-Medusa 或 X-Argus。
+
+`metasec::speck` 实现 Speck-128/256 的 34 轮密钥扩展、分组加密及原生使用的 PKCS#7 填充；公开算法作者向量与固定轮密钥均通过。`metasec::helios` 按模块 `0x43eb90/F0` 使用 `MD5(nonce || secret)` 的小写十六进制 ASCII 作为 32 字节密钥，加密 `秒时间戳-contextText-aid`，输出 `Base64(nonce || ciphertext)`。调用方必须提供真实 SDK 上下文字符串和秘密材料，当前没有猜测或硬编码这些值。
+
+这些部件已通过合成参考向量，但不是官方 SDK 运行输出对照，更不是服务端签名验收。完整上下文初始化、Medusa 状态位、其余头和最终请求合并仍未完成，生产请求不会调用这些原语。108 项项目测试通过。

@@ -215,3 +215,5 @@
 - 新增 Rust metasec::decode_constant，按公开 APK 的常量掩码及 7 个历史原生样本重建零整数/long 参数的常量 payload 变换；测试覆盖跨十字节周期与非法输入，100 项本地测试通过。此模块未接入在线请求，也不提供上下文初始化或签名。配置 builder 的实际引用传递、appID、动态 Map、tk_key 及模式选择已继续核对；SDK 版本字符串仅为静态推导，原生复核待完成。
 
 - 新增 Metasec 配置编码器及公开假数据实机 Java 序列化对照。默认 17 项数组与配置样本 JSON 字节均匹配，覆盖 Java trim、键/值类型、整型边界和转义；102 项测试通过。fixture 使用独立 app_process、固定 APK 哈希及版本占位类，只执行实际 APK 的纯 Java 编码器，没有调用原生 SDK 初始化、账号接口或直播写操作，临时 DEX 已清理。该编码器不代表已获得运行时签名上下文。
+
+- 按用户要求通过 gh 检索同版本开源研究，定位到 ShuaiLeiLu/DY_luckybag 中与本项目相同 SHA-256 的 Metasec 库及已恢复部件。新增 Rust metasec::digest、speck、helios：Medusa 64 轮压缩、非标准填充、增量摘要与尾部两分支，Speck-128/256 密钥扩展、分组加密和 PKCS#7，以及显式输入 SDK 上下文/秘密材料的 Helios 值封装。摘要、尾部和 Helios 固定值由公开实现用合成输入生成；Speck 另通过算法作者公开向量。参考仓库未声明许可证，未复制其源码文件，只移植算法事实和公开参数。新增 RustCrypto md-5 用于 Helios 的标准 MD5。108 项本地测试通过；尚未恢复完整 SDK 上下文、Medusa 状态位、其余安全头或服务端验收，未接入生产请求。
