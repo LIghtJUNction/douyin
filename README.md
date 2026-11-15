@@ -144,9 +144,28 @@ douyin auth cookie-logout
 
 也支持 `--cookie` 和 `DOUYIN_COOKIE`。保存时只检查格式，`--offline` 也只检查格式；联网检查成功才确认网页登录态。Cookie 管理和网页采集后端已补回。`DOUYIN_NATIVE_TRANSPORT=web` 使用 `cookie.json` 与主站 `a_bogus` 签名，已实测搜索和评论；作品详情与用户作品仍待验收。可用 `DOUYIN_WEB_HOST=aweme.snssdk.com` 切换受支持主机。
 
+## 社交写操作
+
+参数名来自安装包 Retrofit 注解，写操作一律要 `--yes`。点赞/收藏、评论发布/回复、评论赞/踩已在 direct Token 下实测返回 `status_code=0`；评论发布需通过显式 `--adb-guard` 使用已连接 rooted 手机生成当前路径的 TicketGuard 请求头。关注接口仍未完成验收，完整记录见 `docs/rebuild.md`。
+
+```bash
+douyin social digg "作品ID" --action 1 --yes
+douyin social follow --sec-user-id "SEC_UID" --action 1 --yes
+douyin social comment "作品ID" --text "内容" --adb-guard --yes
+douyin social comment "作品ID" --text "回复" --reply-id "评论ID" --adb-guard --yes
+douyin social comment-digg "评论ID" "作品ID" --action 1 --yes
+douyin social comment-dislike "评论ID" "作品ID" --action 1 --yes
+douyin social collect "作品ID" --action 1 --yes
+douyin social share "作品ID"
+```
+
+评论取消赞/踩使用 `--action 0`，分别映射到 APK 的 `digg_type=2/3`。`share` 只读取并输出分享链接，不会发送给联系人。视频下载沿用 `-t aweme` 或 `download` 媒体命令，CDN 请求不携带登录凭据。
+
 ## 直播配置和 OBS 联动
 
 `douyin live permissions` 查询当前账号的直播配置。CLI 和 MCP 都已实测导入后独立运行，不需要手机连接或 WebView Cookie；会先核对当前账号，只输出认证类型、回放/录制/商城等设置开关、预约直播设置和配置栏目。这个命令不创建直播间，也不把接口返回的配置当作开播成功。MCP 对应工具是 `native_live_permissions`。原生只读 MCP 还包括 `native_search`、`native_aweme`、`native_comments`、`native_comment_replies` 和 `native_user_posts`，均已通过真实 stdio 调用验收。
+
+`douyin live create-info` 使用 APK 证实的 `platform=2` 查询开播预览；`create-check` / `create --params-file` / `leave` 已接线，开房 FieldMap 键只允许 APK 已恢复集合，尚未完成真实开播闭环。
 
 `douyin live info "房间 ID"` 已接入安卓房间查询代码，只输出房间摘要，不打印推拉流地址。摘要中的 `sdk_stream_type` 按已核对的 SDK 规则区分视频、音频、录屏、第三方和媒体房间；字段不完整时为 `null`，这个分类不等同于手机身份开播证明。当前独立请求仍受签名和风控限制，尚未通过真实房间验收。
 

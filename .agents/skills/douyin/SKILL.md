@@ -123,6 +123,48 @@ not verified as the final app TTNet UA. Do not claim the entire outgoing
 context has been captured or complete signed search/live replay works. Basic Token-only core authentication has since been verified separately. See docs/rebuild.md
 for exact evidence and failed probe limitations.
 
+## Social Writes and Live Lifecycle
+
+Android social writes and room lifecycle use APK-recovered routes only; never invent FieldMap keys or `platform` values. All mutating commands require `--yes`.
+
+```bash
+douyin social digg "$AWEME_ID" --action 1 --yes
+douyin social follow --sec-user-id "$SEC_UID" --action 1 --yes
+douyin social comment "$AWEME_ID" --text "..." --adb-guard --yes
+douyin social comment "$AWEME_ID" --text "..." --reply-id "$CID" --adb-guard --yes
+douyin social comment-digg "$CID" "$AWEME_ID" --action 1 --yes
+douyin social comment-dislike "$CID" "$AWEME_ID" --action 1 --yes
+douyin social collect "$AWEME_ID" --action 1 --yes
+douyin social share "$AWEME_ID"
+douyin live create-info
+douyin live create-check
+douyin live create --params-file ./create-room.json --yes
+douyin live leave --room-id "$ROOM_ID" --yes
+```
+
+`create-info` locks `platform=2` to the 40.8.0 call site. `create` accepts only FieldMap keys recovered from `X.0VaJ.LIZLLL`. A successful digg/collect/comment sample does not prove follow or room create acceptance; see `docs/rebuild.md`. Comment publish/reply requires the explicit `--adb-guard` phone path signature and passed real acceptance. Comment reaction types are like=1, unlike=2, dislike=4, cancel-dislike=3; all four passed. `share` only returns the server share URL and does not send it to a contact.
+
+## Private Messages (IM)
+
+App private chat is **not** a simple Aweme form POST. Seen in 40.8.0:
+
+- Aweme REST helpers: `/aweme/v1/im/config/`, `/aweme/v1/im/get/stranger_priv/`, `POST /aweme/v1/im/service/enter_chat/` (JSON body `LX/0UGy`: `conversation_id`, `conversation_short_id`, `conversation_type`, `source`, …)
+- Actual send/pull: ByteDance IM SDK → `https://imapi.snssdk.com/v1/message/send` with `application/x-protobuf` `Request` (`cmd` SEND_MESSAGE=100, GET_MESSAGES_BY_USER=200, CREATE_CONVERSATION_V2=609, GET_TICKET=2005). Field tags from Wire adapters on `SendMessageRequestBody` / `RequestBody`.
+- Realtime receive also uses Frontier WebSocket (`send_msg_by_ws`); HTTP is the `send_msg_by_http` path.
+
+```bash
+douyin im config
+douyin im stranger-priv
+douyin im can-send --sec-user-id "$SEC_UID"
+douyin im enter-chat --conversation-id "$CID" --conversation-short-id "$SID"
+douyin im ticket --to-user-id "$UID" --yes
+douyin im create-conversation --user-id "$UID" --yes
+douyin im pull --limit 20 --yes
+douyin im send --conversation-id "$CID" --conversation-short-id "$SID" --ticket "$TICKET" --text "..." --yes
+```
+
+Do not claim end-to-end send success until imapi returns a decoded protobuf success body (not the JSON stub `Method:0`). Comment publish without TicketGuard returned an empty HTTP body; the explicit `--adb-guard` path subsequently returned decoded success for both top-level comments and replies.
+
 ## Web Workflows
 
 ```bash

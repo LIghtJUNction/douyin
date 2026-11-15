@@ -155,6 +155,42 @@ fn tools() -> Result<Vec<Tool>, String> {
         true,
     )?);
     rows.push(tool(
+        "native_live_create_info",
+        "查询安卓开播预览配置；platform 固定为 APK 证实值 2，不创建直播间",
+        schema(json!({}), &[]),
+        true,
+        true,
+    )?);
+    rows.push(tool(
+        "native_digg",
+        "安卓原生点赞或取消点赞；需要 confirmed=true",
+        schema(
+            json!({
+                "aweme_id":{"type":"string","minLength":1},
+                "action":{"type":"integer","minimum":0,"maximum":1,"default":1},
+                "channel_id":{"type":"integer","default":0},
+                "confirmed":{"type":"boolean","default":false}
+            }),
+            &["aweme_id"],
+        ),
+        false,
+        true,
+    )?);
+    rows.push(tool(
+        "native_collect",
+        "安卓原生收藏或取消收藏；需要 confirmed=true",
+        schema(
+            json!({
+                "aweme_id":{"type":"string","minLength":1},
+                "action":{"type":"integer","minimum":0,"maximum":1,"default":1},
+                "confirmed":{"type":"boolean","default":false}
+            }),
+            &["aweme_id"],
+        ),
+        false,
+        true,
+    )?);
+    rows.push(tool(
         "native_me",
         "使用 ADB 导入的登录态读取当前账号资料",
         schema(json!({}), &[]),
@@ -284,6 +320,35 @@ fn execute(name: &str, args: &Map<String, Value>) -> Result<Value, String> {
         return crate::live::permission_summary(
             &crate::net::NativeClient::saved()?.live_permissions()?,
         );
+    }
+    if name == "native_live_create_info" {
+        let response = crate::net::NativeClient::saved()?.live_create_info(2)?;
+        let status = response
+            .get("status_code")
+            .and_then(Value::as_i64)
+            .ok_or("开播预览响应缺少 status_code")?;
+        return Ok(json!({
+            "status_code": status,
+            "ok": status == 0,
+            "has_data": response.get("data").is_some(),
+        }));
+    }
+    if name == "native_digg" {
+        if args.get("confirmed") != Some(&Value::Bool(true)) {
+            return Err("写操作需要 confirmed=true".into());
+        }
+        let client = crate::net::NativeClient::saved()?;
+        let action = number(args, "action", 1, 0, 1)? as u8;
+        let channel_id = number(args, "channel_id", 0, 0, 1_000_000)? as i32;
+        return crate::social::digg(&client, required(args, "aweme_id")?, action, channel_id);
+    }
+    if name == "native_collect" {
+        if args.get("confirmed") != Some(&Value::Bool(true)) {
+            return Err("写操作需要 confirmed=true".into());
+        }
+        let client = crate::net::NativeClient::saved()?;
+        let action = number(args, "action", 1, 0, 1)? as u8;
+        return crate::social::collect(&client, required(args, "aweme_id")?, action);
     }
     if name == "openapi_request" {
         let method = Method::from_bytes(required(args, "method")?.as_bytes())

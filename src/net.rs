@@ -11,7 +11,7 @@ use reqwest::{
     redirect::Policy,
 };
 use serde_json::Value;
-use url::Url;
+use url::{Url, form_urlencoded};
 
 use crate::{auth, store};
 
@@ -74,8 +74,163 @@ impl NativeClient {
         self.get_url(native_url(path)?, params)
     }
 
+    /// Like `get`, but skips `status_code` gating for APIs that omit it (e.g. some IM config payloads).
+    pub fn get_lenient(&self, path: &str, params: &[(String, String)]) -> Result<Value, String> {
+        let value = self.request_url_lenient(Method::GET, native_url(path)?, params, None)?;
+        Ok(value)
+    }
+
     pub fn post(&self, path: &str, form: &[(String, String)]) -> Result<Value, String> {
         self.request_url(Method::POST, native_url(path)?, &[], Some(form))
+    }
+
+    pub fn post_with_query(
+        &self,
+        path: &str,
+        query: &[(String, String)],
+        form: &[(String, String)],
+    ) -> Result<Value, String> {
+        self.request_url(Method::POST, native_url(path)?, query, Some(form))
+    }
+
+    pub fn post_with_query_headers(
+        &self,
+        path: &str,
+        query: &[(String, String)],
+        form: &[(String, String)],
+        extra_headers: &[(String, String)],
+    ) -> Result<Value, String> {
+        if self.mode != "direct" {
+            return Err("TicketGuard 写接口请使用 direct".into());
+        }
+        let (status, content_type, encoding, raw) = self.dispatch_native(
+            Method::POST,
+            native_url(path)?,
+            query,
+            extra_headers,
+            Some((
+                "application/x-www-form-urlencoded",
+                form_urlencoded::Serializer::new(String::new())
+                    .extend_pairs(
+                        form.iter()
+                            .map(|(key, value)| (key.as_str(), value.as_str())),
+                    )
+                    .finish()
+                    .into_bytes(),
+            )),
+            true,
+        )?;
+        if !(200..300).contains(&status) {
+            return Err(format!("抖音接口返回 HTTP {status}"));
+        }
+        let value = decode_json_body(&raw, &content_type, &encoding)?;
+        check_response(&value)?;
+        Ok(value)
+    }
+
+    /// JSON POST for recovered Retrofit `@Body` endpoints (e.g. enter_chat).
+    pub fn post_json(
+        &self,
+        path: &str,
+        extra_headers: &[(String, String)],
+        body: &Value,
+    ) -> Result<Value, String> {
+        if self.mode == "web" || self.mode == "phone" {
+            return Err("JSON 写接口请使用 direct 或 duckemu".into());
+        }
+        let bytes = serde_json::to_vec(body).map_err(|_| "JSON 正文序列化失败")?;
+        let (status, content_type, encoding, raw) = self.dispatch_native(
+            Method::POST,
+            native_url(path)?,
+            &[],
+            extra_headers,
+            Some(("application/json; charset=utf-8", bytes)),
+            true,
+        )?;
+        if !(200..300).contains(&status) {
+            return Err(format!("抖音接口返回 HTTP {status}"));
+        }
+        let value = decode_json_body(&raw, &content_type, &encoding)?;
+        check_response(&value)?;
+        Ok(value)
+    }
+
+    /// IM SDK HTTP gate: `https://imapi.snssdk.com` + `application/x-protobuf`.
+    pub fn post_imapi_protobuf(&self, path: &str, body: &[u8]) -> Result<Vec<u8>, String> {
+        if self.mode == "web" || self.mode == "phone" {
+            return Err("IM protobuf 发送请使用 direct 或 duckemu".into());
+        }
+        if !path.starts_with('/') || path.contains("://") || path.contains("..") {
+            return Err("imapi 路径无效".into());
+        }
+        let url =
+            Url::parse(&format!("https://imapi.snssdk.com{path}")).map_err(|_| "imapi 地址无效")?;
+        let (status, _content_type, _encoding, raw) = self.dispatch_native(
+            Method::POST,
+            url,
+            &[],
+            &[],
+            Some(("application/x-protobuf", body.to_vec())),
+            false, // imapi Request carries device/token inside protobuf
+        )?;
+        if !(200..300).contains(&status) {
+            return Err(format!("imapi 返回 HTTP {status}"));
+        }
+        Ok(raw)
+    }
+
+    pub(crate) fn im_request_parts(
+        &self,
+        cmd: i32,
+        body: Vec<u8>,
+    ) -> Result<crate::im_pb::ImRequestParts, String> {
+        let token = self.session["nativeAuth"]["token"]
+            .as_str()
+            .filter(|v| !v.is_empty())
+            .ok_or("IM 请求需要 nativeAuth.token")?;
+        let device = &self.session["device"];
+        let device_id = device["deviceId"]
+            .as_str()
+            .filter(|v| !v.is_empty())
+            .ok_or("登录配置缺少 deviceId")?;
+        let sequence_id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| "系统时间无效")?
+            .as_millis() as i64;
+        let version_code = match &device["versionCode"] {
+            Value::String(s) if !s.is_empty() => s.clone(),
+            Value::Number(n) => n.to_string(),
+            _ => "400800".into(),
+        };
+        Ok(crate::im_pb::ImRequestParts {
+            cmd,
+            sequence_id,
+            sdk_version: crate::im_pb::IM_SDK_VERSION.into(),
+            token: token.into(),
+            inbox_type: 0,
+            build_number: crate::im_pb::IM_BUILD_NUMBER.into(),
+            device_id: device_id.into(),
+            device_platform: "android".into(),
+            device_type: device["model"].as_str().unwrap_or("phone").into(),
+            os_version: device["androidRelease"].as_str().unwrap_or("").into(),
+            version_code,
+            headers: vec![("flow-tag".into(), "new".into())],
+            // IClientBridge$-CC defaults: access=`douyin_main`, biz=`douyin`.
+            biz: Some("douyin".into()),
+            access: Some("douyin_main".into()),
+            // SEND/CREATE: default CERT_AUTH; upgraded to PASSPORT_CERT + ZT fields in im.rs
+            // when DOUYIN_IM_ZT_JSON is set (`authType must be certAuth`).
+            auth_type: matches!(
+                cmd,
+                crate::im_pb::CMD_SEND_MESSAGE | crate::im_pb::CMD_CREATE_CONVERSATION_V2
+            )
+            .then_some(crate::im_pb::AUTH_TYPE_CERT),
+            client_cert: None,
+            client_data: None,
+            ree_public_key: None,
+            iter_version: None,
+            body,
+        })
     }
 
     pub(crate) fn live_room_info(&self, room_id: &str) -> Result<Value, String> {
@@ -130,8 +285,248 @@ impl NativeClient {
         self.get_url(url, &[("sec_anchor_id".into(), sec_id.into())])
     }
 
+    /// Preview create_info. `platform=2` is recovered from the 40.8.0 call site.
+    pub(crate) fn live_create_info(&self, platform: i32) -> Result<Value, String> {
+        if self.mode != "direct" {
+            return Err("开播预览配置使用独立请求，请使用 direct".into());
+        }
+        if platform != 2 {
+            return Err("create_info 的 platform 目前只接受 APK 调用点证实的值 2".into());
+        }
+        crate::native_auth::live_permission_auth(&self.session)?;
+        let url = Url::parse("https://webcast.amemv.com/webcast/room/create_info/")
+            .map_err(|_| "开播预览接口地址无效")?;
+        self.get_url(url, &[("platform".into(), platform.to_string())])
+    }
+
+    pub(crate) fn live_create_room(&self, form: &[(String, String)]) -> Result<Value, String> {
+        if self.mode != "direct" {
+            return Err("创建直播间使用独立请求，请使用 direct".into());
+        }
+        crate::native_auth::live_permission_auth(&self.session)?;
+        let url = Url::parse("https://webcast.amemv.com/webcast/room/create/")
+            .map_err(|_| "开播接口地址无效")?;
+        self.request_url(Method::POST, url, &[], Some(form))
+    }
+
+    pub(crate) fn live_leave_room(&self, room_id: &str) -> Result<Value, String> {
+        if self.mode != "direct" {
+            return Err("离开直播间使用独立请求，请使用 direct".into());
+        }
+        crate::native_auth::live_permission_auth(&self.session)?;
+        let url = Url::parse("https://webcast.amemv.com/webcast/room/leave/")
+            .map_err(|_| "离开直播间接口地址无效")?;
+        self.request_url(
+            Method::POST,
+            url,
+            &[],
+            Some(&[("room_id".into(), room_id.into())]),
+        )
+    }
+
+    /// create_check QueryMap. Only pass keys recovered from the APK call site.
+    pub(crate) fn live_create_check(&self, params: &[(String, String)]) -> Result<Value, String> {
+        if self.mode != "direct" {
+            return Err("开播检查使用独立请求，请使用 direct".into());
+        }
+        const ALLOWED: &[&str] = &[
+            "introduction",
+            "digg_auth",
+            "deliver",
+            "live_room_mode",
+            "check_scene",
+            "chat_auth",
+            "share_auth",
+            "orientation",
+            "third_party",
+            "live_audio",
+            "screen_shot",
+            "acquaintance",
+        ];
+        for (key, _) in params {
+            if !ALLOWED.contains(&key.as_str()) {
+                return Err(format!("create_check 不接受未证实的参数: {key}"));
+            }
+        }
+        crate::native_auth::live_permission_auth(&self.session)?;
+        let url = Url::parse("https://webcast.amemv.com/webcast/room/create_check/")
+            .map_err(|_| "开播检查接口地址无效")?;
+        self.get_url(url, params)
+    }
+
     fn get_url(&self, url: Url, params: &[(String, String)]) -> Result<Value, String> {
         self.request_url(Method::GET, url, params, None)
+    }
+
+    /// Shared native dispatch for form/JSON/protobuf bodies.
+    /// When `attach_identity` is true, appends device identity + ts query pairs (aweme/webcast).
+    fn dispatch_native(
+        &self,
+        method: Method,
+        mut url: Url,
+        params: &[(String, String)],
+        extra_headers: &[(String, String)],
+        raw_body: Option<(&str, Vec<u8>)>,
+        attach_identity: bool,
+    ) -> Result<(u16, String, String, Vec<u8>), String> {
+        if self.mode == "web" || self.mode == "phone" {
+            return Err("此请求路径不支持 web/phone 传输".into());
+        }
+        let host = url.host_str().ok_or("接口缺少主机")?.to_string();
+        if attach_identity {
+            let identity = auth::request_identity(&self.session)?;
+            if params.iter().any(|(key, _)| {
+                matches!(key.as_str(), "ts" | "_rticket")
+                    || identity.iter().any(|(reserved, _)| key == reserved)
+            }) {
+                return Err("请求参数不能覆盖登录设备的身份和版本".into());
+            }
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|_| "系统时间无效")?;
+            url.query_pairs_mut()
+                .extend_pairs(identity)
+                .extend_pairs(params.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+                .append_pair("ts", &timestamp.as_secs().to_string())
+                .append_pair("_rticket", &timestamp.as_millis().to_string());
+        } else if !params.is_empty() {
+            url.query_pairs_mut()
+                .extend_pairs(params.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+        }
+        if self.mode == "duckemu"
+            && host != "aweme.snssdk.com"
+            && host != "imapi.snssdk.com"
+            && !(host == "webcast.amemv.com" && url.path() == "/webcast/room/info/")
+        {
+            return Err("DuckDroid2 签名通道只允许原生 API、imapi 和公开房间查询".into());
+        }
+        let (native_headers, agent) = if host == "webcast.amemv.com"
+            && matches!(
+                url.path(),
+                "/webcast/user/permission/"
+                    | "/webcast/room/create_info/"
+                    | "/webcast/room/create_check/"
+                    | "/webcast/room/create/"
+                    | "/webcast/room/leave/"
+            ) {
+            crate::native_auth::live_permission_auth(&self.session)?
+        } else {
+            (
+                crate::native_auth::headers(&self.session, &host)?,
+                crate::native_auth::user_agent(&self.session, &host)?,
+            )
+        };
+        let mut effective = HeaderMap::new();
+        effective.insert(
+            "User-Agent",
+            HeaderValue::from_str(agent).map_err(|_| "原生 User-Agent 格式无效")?,
+        );
+        effective.insert("Accept-Encoding", HeaderValue::from_static("gzip, deflate"));
+        let has_token = !native_headers.is_empty();
+        if has_token {
+            effective.extend(native_headers);
+        }
+        // IM SDK also sends X-Tt-Token; reuse the same Token when present.
+        if host == "imapi.snssdk.com"
+            && let Some(token) = self.session["nativeAuth"]["token"]
+                .as_str()
+                .filter(|v| !v.is_empty())
+        {
+            let mut value = HeaderValue::from_str(token).map_err(|_| "X-Tt-Token 格式无效")?;
+            value.set_sensitive(true);
+            effective.insert("X-Tt-Token", value);
+        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| "系统时间无效")?
+            .as_secs();
+        let allow_empty_cookie = host == "webcast.amemv.com" && url.path() == "/webcast/room/info/";
+        let cookie = match self.session["cookies"].as_array() {
+            Some(cookies) if !cookies.is_empty() => {
+                if allow_empty_cookie {
+                    auth::cookie_header(cookies, &host, url.path(), now).unwrap_or_default()
+                } else {
+                    auth::cookie_header(cookies, &host, url.path(), now)?
+                }
+            }
+            _ if has_token || host == "imapi.snssdk.com" => {
+                device_install_cookie(&self.session).unwrap_or_default()
+            }
+            _ if allow_empty_cookie => String::new(),
+            _ => return Err("登录配置缺少 Cookie".into()),
+        };
+        if !cookie.is_empty() {
+            let mut value = HeaderValue::from_str(&cookie).map_err(|_| "Cookie 请求头格式无效")?;
+            value.set_sensitive(true);
+            effective.insert("Cookie", value);
+        } else if !has_token && !allow_empty_cookie && host != "imapi.snssdk.com" {
+            return Err("登录配置缺少 Cookie".into());
+        }
+        if host == "aweme.snssdk.com"
+            || (host == "webcast.amemv.com"
+                && matches!(
+                    url.path(),
+                    "/webcast/room/info/"
+                        | "/webcast/room/create_info/"
+                        | "/webcast/room/create_check/"
+                        | "/webcast/room/create/"
+                        | "/webcast/room/leave/"
+                ))
+        {
+            effective.insert(
+                "x-ss-req-ticket",
+                crate::native_auth::request_ticket()?
+                    .parse()
+                    .map_err(|_| "毫秒请求票据格式无效")?,
+            );
+        }
+        for (name, value) in extra_headers {
+            effective.insert(
+                reqwest::header::HeaderName::from_bytes(name.as_bytes())
+                    .map_err(|_| "额外请求头名称无效")?,
+                HeaderValue::from_str(value).map_err(|_| "额外请求头值无效")?,
+            );
+        }
+        if let Some((content_type, bytes)) = &raw_body {
+            effective.insert(
+                "Content-Type",
+                HeaderValue::from_str(content_type).map_err(|_| "Content-Type 无效")?,
+            );
+            effective.insert(
+                "x-ss-stub",
+                HeaderValue::from_str(&body_digest(bytes)).map_err(|_| "正文摘要格式无效")?,
+            );
+        }
+        if self.mode == "duckemu" && host == "aweme.snssdk.com" {
+            effective.extend(self.duckemu.sign(&url, &effective)?);
+        }
+        let mut request = self.client.request(method, url.clone()).headers(effective);
+        if let Some((_, bytes)) = raw_body {
+            request = request.body(bytes);
+        }
+        let response = request.send().map_err(|_| "抖音请求失败或超时")?;
+        let status = response.status().as_u16();
+        let encoding = response
+            .headers()
+            .get("content-encoding")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let mut bytes = Vec::new();
+        response
+            .take(16 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "读取接口响应失败")?;
+        if bytes.len() > 16 * 1024 * 1024 {
+            return Err("接口响应超过 16 MiB 限制".into());
+        }
+        Ok((status, content_type, encoding, bytes))
     }
 
     fn request_url(
@@ -193,15 +588,22 @@ impl NativeClient {
         {
             return Err("DuckDroid2 签名通道只允许原生 API 和公开房间查询".into());
         }
-        let (native_headers, agent) =
-            if host == "webcast.amemv.com" && url.path() == "/webcast/user/permission/" {
-                crate::native_auth::live_permission_auth(&self.session)?
-            } else {
-                (
-                    crate::native_auth::headers(&self.session, host)?,
-                    crate::native_auth::user_agent(&self.session, host)?,
-                )
-            };
+        let (native_headers, agent) = if host == "webcast.amemv.com"
+            && matches!(
+                url.path(),
+                "/webcast/user/permission/"
+                    | "/webcast/room/create_info/"
+                    | "/webcast/room/create_check/"
+                    | "/webcast/room/create/"
+                    | "/webcast/room/leave/"
+            ) {
+            crate::native_auth::live_permission_auth(&self.session)?
+        } else {
+            (
+                crate::native_auth::headers(&self.session, host)?,
+                crate::native_auth::user_agent(&self.session, host)?,
+            )
+        };
         let mut effective = HeaderMap::new();
         effective.insert(
             "User-Agent",
@@ -239,7 +641,15 @@ impl NativeClient {
             return Err("登录配置缺少 Cookie".into());
         }
         if host == "aweme.snssdk.com"
-            || (host == "webcast.amemv.com" && url.path() == "/webcast/room/info/")
+            || (host == "webcast.amemv.com"
+                && matches!(
+                    url.path(),
+                    "/webcast/room/info/"
+                        | "/webcast/room/create_info/"
+                        | "/webcast/room/create_check/"
+                        | "/webcast/room/create/"
+                        | "/webcast/room/leave/"
+                ))
         {
             effective.insert(
                 "x-ss-req-ticket",
@@ -320,6 +730,38 @@ impl NativeClient {
             return Ok(value);
         }
         check_response(&value)?;
+        Ok(value)
+    }
+
+    fn request_url_lenient(
+        &self,
+        method: Method,
+        url: Url,
+        params: &[(String, String)],
+        form: Option<&[(String, String)]>,
+    ) -> Result<Value, String> {
+        // Reuse the normal path then skip status_code gating for known schema-flexible APIs.
+        // Implemented by temporarily accepting any JSON object with log_pb / data / extra.
+        let value = {
+            // Call through request_url would gate; use dispatch for GET-only lenient reads.
+            if method != Method::GET || form.is_some() {
+                return Err("lenient 请求目前只支持无 body 的 GET".into());
+            }
+            let (status, content_type, encoding, raw) =
+                self.dispatch_native(method, url, params, &[], None, true)?;
+            if !(200..300).contains(&status) {
+                return Err(format!("抖音接口返回 HTTP {status}"));
+            }
+            decode_json_body(&raw, &content_type, &encoding)?
+        };
+        if value.get("status_code").is_some() {
+            check_response(&value)?;
+        } else if value.get("log_pb").is_none()
+            && value.get("extra").is_none()
+            && value.get("data").is_none()
+        {
+            return Err("接口未返回可识别的业务状态，无法确认请求成功".into());
+        }
         Ok(value)
     }
 
@@ -450,6 +892,28 @@ impl NativeClient {
 
 fn body_digest(body: &[u8]) -> String {
     format!("{:X}", Md5::digest(body))
+}
+
+fn decode_json_body(bytes: &[u8], content_type: &str, encoding: &str) -> Result<Value, String> {
+    let mut stream = serde_json::Deserializer::from_slice(bytes).into_iter::<Value>();
+    let value = stream
+        .next()
+        .transpose()
+        .map_err(|error| {
+            format!(
+                "{}（JSON 错误: {}，行列 {}:{}）",
+                response_format_error(bytes, content_type, encoding),
+                error,
+                error.line(),
+                error.column()
+            )
+        })?
+        .ok_or_else(|| response_format_error(bytes, content_type, encoding))?;
+    let trailer = &bytes[stream.byte_offset()..];
+    if trailer.iter().any(|byte| !byte.is_ascii_whitespace()) {
+        consume_trailing_json_objects(trailer)?;
+    }
+    Ok(value)
 }
 
 fn response_format_error(bytes: &[u8], content_type: &str, encoding: &str) -> String {
@@ -584,7 +1048,16 @@ pub(crate) fn check_response(value: &Value) -> Result<(), String> {
     }
     match integer(&value["status_code"]) {
         Some(0) => Ok(()),
-        Some(code) => Err(format!("抖音接口报告错误码 {code}")),
+        Some(code) => {
+            let detail = value
+                .get("status_msg")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|msg| !msg.is_empty())
+                .map(|msg| format!("：{msg}"))
+                .unwrap_or_default();
+            Err(format!("抖音接口报告错误码 {code}{detail}"))
+        }
         None => Err("接口未返回可识别的业务状态，无法确认请求成功".into()),
     }
 }

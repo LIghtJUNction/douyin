@@ -18,6 +18,10 @@ enum Command {
     PhoneWorker,
     /// 采集作品评论与楼中楼回复
     Comment(douyin_cli::comments::CommentArgs),
+    /// 安卓账号写操作：赞、关、评、藏（需 --yes）
+    Social(douyin_cli::social::SocialArgs),
+    /// 私信：Aweme REST 辅助接口 + imapi protobuf 收发
+    Im(douyin_cli::im::ImArgs),
     /// 通过 stdio 或 Streamable HTTP 启动 MCP，支持事件 Webhook
     Mcp(douyin_cli::mcp_http::McpArgs),
     /// 调用官方 OpenAPI，需要开放平台应用授权
@@ -111,6 +115,8 @@ fn run() -> Result<(), String> {
         Command::Live(args) => douyin_cli::live::run(args)?,
         Command::PhoneWorker => douyin_cli::phone::worker()?,
         Command::Comment(args) => douyin_cli::comments::run(args)?,
+        Command::Social(args) => douyin_cli::social::run(args)?,
+        Command::Im(args) => douyin_cli::im::run(args)?,
         Command::Mcp(args) => douyin_cli::mcp_http::run(args)?,
         Command::Api(args) => douyin_cli::api::run(args)?,
         Command::Download { url, output } => douyin_cli::download::url(&url, &output)?,

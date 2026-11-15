@@ -13,8 +13,44 @@ pub struct LiveArgs {
 enum LiveCommand {
     /// 独立查询当前安卓账号的直播权限配置，不创建直播间
     Permissions,
+    /// 查询开播预览配置（GET /webcast/room/create_info/，platform 固定为 APK 证实值 2）
+    CreateInfo {
+        #[arg(long, default_value_t = 2)]
+        platform: i32,
+    },
+    /// 开播前权限检查（GET /webcast/room/create_check/）
+    CreateCheck {
+        #[arg(long, default_value = "0")]
+        live_room_mode: String,
+        #[arg(long, default_value = "2")]
+        check_scene: String,
+        #[arg(long, default_value = "1")]
+        chat_auth: String,
+        #[arg(long, default_value = "1")]
+        share_auth: String,
+        #[arg(long, default_value = "1")]
+        digg_auth: String,
+        #[arg(long, default_value = "douyin,xigua")]
+        deliver: String,
+        #[arg(long, default_value = "0")]
+        introduction: String,
+    },
     /// 使用当前采集传输查询公开直播间
     Info { room_id: String },
+    /// 用 APK 证实的 FieldMap 键创建直播间（POST /webcast/room/create/）；值来自 JSON 文件，不猜填
+    Create {
+        #[arg(long)]
+        params_file: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// 结束/离开直播间（POST /webcast/room/leave/）
+    Leave {
+        #[arg(long)]
+        room_id: String,
+        #[arg(long)]
+        yes: bool,
+    },
     /// 通过本机 OBS WebSocket 联动直播
     Obs(ObsArgs),
 }
@@ -78,9 +114,73 @@ pub fn run(args: LiveArgs) -> Result<(), String> {
             println!("{}", permission_summary(&response)?);
             return Ok(());
         }
+        LiveCommand::CreateInfo { platform } => {
+            let response = crate::net::NativeClient::saved()?.live_create_info(platform)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&create_info_summary(&response)?)
+                    .map_err(|_| "开播预览结果序列化失败")?
+            );
+            return Ok(());
+        }
+        LiveCommand::CreateCheck {
+            live_room_mode,
+            check_scene,
+            chat_auth,
+            share_auth,
+            digg_auth,
+            deliver,
+            introduction,
+        } => {
+            let response = crate::net::NativeClient::saved()?.live_create_check(&[
+                ("live_room_mode".into(), live_room_mode),
+                ("check_scene".into(), check_scene),
+                ("chat_auth".into(), chat_auth),
+                ("share_auth".into(), share_auth),
+                ("digg_auth".into(), digg_auth),
+                ("deliver".into(), deliver),
+                ("introduction".into(), introduction),
+            ])?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&create_check_summary(&response)?)
+                    .map_err(|_| "开播检查结果序列化失败")?
+            );
+            return Ok(());
+        }
         LiveCommand::Info { room_id } => {
             let response = crate::net::NativeClient::saved()?.live_room_info(&room_id)?;
             println!("{}", room_summary(&response, &room_id)?);
+            return Ok(());
+        }
+        LiveCommand::Create { params_file, yes } => {
+            if !yes {
+                return Err("创建直播间会占用开播配额，需要 --yes".into());
+            }
+            let form = create_room_form(&read_private(&params_file)?)?;
+            let response = crate::net::NativeClient::saved()?.live_create_room(&form)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&create_room_summary(&response)?)
+                    .map_err(|_| "开播结果序列化失败")?
+            );
+            return Ok(());
+        }
+        LiveCommand::Leave { room_id, yes } => {
+            if !yes {
+                return Err("离开直播间需要 --yes".into());
+            }
+            if room_id.parse::<u64>().ok().filter(|id| *id > 0).is_none()
+                || !room_id.bytes().all(|b| b.is_ascii_digit())
+            {
+                return Err("直播间 ID 必须是正整数".into());
+            }
+            let response = crate::net::NativeClient::saved()?.live_leave_room(&room_id)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&create_check_summary(&response)?)
+                    .map_err(|_| "离开直播间结果序列化失败")?
+            );
             return Ok(());
         }
         LiveCommand::Obs(args) => args,
@@ -269,6 +369,155 @@ fn push_settings(text: &str) -> Result<Value, String> {
     }
     // Preserve signed bytes exactly; never split or reserialize a stream key.
     Ok(json!({"server":server,"key":key,"use_auth":false}))
+}
+
+/// FieldMap keys recovered from classes13 `X.0VaJ.LIZLLL` create-room builder.
+const CREATE_ROOM_KEYS: &[&str] = &[
+    "title",
+    "cover_uri",
+    "game",
+    "tags",
+    "gen_replay",
+    "record_screen",
+    "gift_auth",
+    "orientation",
+    "webcast",
+    "acquaintance",
+    "enable_realtime_replay",
+    "has_commerce_goods",
+    "live_audio",
+    "auto_cover",
+    "third_party",
+    "category",
+    "screen_shot",
+    "live_room_mode",
+    "chat_auth",
+    "share_auth",
+    "introduction",
+    "digg_auth",
+    "deliver",
+    "xigua_cover_uri",
+    "virtual_live_info",
+    "poi_id",
+    "circle_id",
+    "resolution_key",
+    "prop_id",
+    "fansclub_auth",
+    "redpacket_audience_auth",
+    "paid_live_type",
+    "ticket_id",
+    "paid_live_create_rights",
+    "desire_id",
+    "probe_recommend_resolution",
+    "is_user_select",
+    "challenge_id",
+    "create_room_source",
+    "audience_display_type",
+    "vr_type",
+    "enable_health_score_check",
+    "ab_params",
+    "sub_orientation",
+    "frame_scale",
+    "continue_room",
+    "uid",
+    "visibility_range",
+    "disable_location_permission",
+    "audience",
+    "stream_type",
+    "push_stream_type",
+    "live_type_audio",
+    "live_type_screenshot",
+    "live_type_third_party",
+    "live_type_normal",
+    "hashtag",
+    "topic_id",
+    "visibility",
+    "platform",
+];
+
+fn create_room_form(text: &str) -> Result<Vec<(String, String)>, String> {
+    let value: Value = serde_json::from_str(text).map_err(|_| "开播参数不是合法 JSON")?;
+    let object = value
+        .as_object()
+        .ok_or("开播参数必须是 JSON 对象，键为 APK 证实的 FieldMap 字段")?;
+    let mut form = Vec::new();
+    for (key, value) in object {
+        if !CREATE_ROOM_KEYS.contains(&key.as_str()) {
+            return Err(format!("开播参数含未证实字段: {key}"));
+        }
+        let text = match value {
+            Value::String(text) => text.clone(),
+            Value::Number(number) => number.to_string(),
+            Value::Bool(flag) => {
+                if *flag {
+                    "true".into()
+                } else {
+                    "false".into()
+                }
+            }
+            _ => return Err(format!("开播参数 {key} 必须是字符串、数字或布尔")),
+        };
+        if text.chars().any(char::is_control) {
+            return Err(format!("开播参数 {key} 含控制字符"));
+        }
+        if text.len() > 4096 {
+            return Err(format!("开播参数 {key} 过长"));
+        }
+        form.push((key.clone(), text));
+    }
+    if form.is_empty() {
+        return Err("开播参数不能为空".into());
+    }
+    if !form.iter().any(|(key, _)| key == "title") {
+        return Err("开播参数至少需要 title".into());
+    }
+    Ok(form)
+}
+
+fn create_room_summary(response: &Value) -> Result<Value, String> {
+    let status = response
+        .get("status_code")
+        .and_then(Value::as_i64)
+        .ok_or("开播响应缺少 status_code")?;
+    let room_id = response
+        .pointer("/data/id")
+        .or_else(|| response.pointer("/data/room/id"))
+        .or_else(|| response.pointer("/data/id_str"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    Ok(json!({
+        "status_code": status,
+        "ok": status == 0,
+        "room_id": room_id,
+        "status_msg": response.get("status_msg").cloned().unwrap_or(Value::Null),
+        "has_data": response.get("data").is_some(),
+    }))
+}
+
+fn create_info_summary(response: &Value) -> Result<Value, String> {
+    let status = response
+        .get("status_code")
+        .and_then(Value::as_i64)
+        .ok_or("开播预览响应缺少 status_code")?;
+    Ok(json!({
+        "status_code": status,
+        "ok": status == 0,
+        "has_data": response.get("data").is_some(),
+        "keys": response.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>()).unwrap_or_default(),
+    }))
+}
+
+fn create_check_summary(response: &Value) -> Result<Value, String> {
+    let status = response
+        .get("status_code")
+        .and_then(Value::as_i64)
+        .ok_or("开播检查响应缺少 status_code")?;
+    Ok(json!({
+        "status_code": status,
+        "ok": status == 0,
+        "status_msg": response.get("status_msg").cloned().unwrap_or(Value::Null),
+        "has_data": response.get("data").is_some(),
+    }))
 }
 
 pub(crate) fn permission_summary(response: &Value) -> Result<Value, String> {
@@ -515,5 +764,14 @@ mod tests {
             assert!(!error.contains("private"));
             assert!(!error.contains("secret"));
         }
+    }
+
+    #[test]
+    fn create_room_form_only_accepts_apk_fieldmap_keys() {
+        let form = create_room_form(r#"{"title":"fixture","live_room_mode":"0"}"#).unwrap();
+        assert_eq!(form.len(), 2);
+        assert!(create_room_form(r#"{"title":"fixture","unknown":"x"}"#).is_err());
+        assert!(create_room_form(r#"{"live_room_mode":"0"}"#).is_err());
+        assert!(create_room_form(r#"{"title":"bad\n"}"#).is_err());
     }
 }

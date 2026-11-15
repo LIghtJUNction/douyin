@@ -95,7 +95,8 @@ fn credential_headers(login: &Value) -> Result<HeaderMap, String> {
 }
 
 pub(crate) fn headers(session: &Value, host: &str) -> Result<HeaderMap, String> {
-    if host == HOST && session.get("nativeAuth").is_some() {
+    // imapi.snssdk.com is the ByteDance IM SDK HTTP gate; it reuses the same Token.
+    if (host == HOST || host == "imapi.snssdk.com") && session.get("nativeAuth").is_some() {
         validate(session)?;
         credential_headers(&session["nativeAuth"])
     } else {
@@ -117,7 +118,7 @@ pub(crate) fn live_permission_auth(session: &Value) -> Result<(HeaderMap, &str),
 }
 
 pub(crate) fn user_agent<'a>(session: &'a Value, host: &str) -> Result<&'a str, String> {
-    if host == HOST && session.get("nativeAuth").is_some() {
+    if (host == HOST || host == "imapi.snssdk.com") && session.get("nativeAuth").is_some() {
         header_text(&session["nativeAuth"], "userAgent", 4096)
     } else {
         header_text(session, "userAgent", 4096)
