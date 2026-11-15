@@ -108,22 +108,24 @@ pub(crate) fn request(
     } else {
         crate::cookie::load()?
     };
+    let visitor = cookie_value(
+        cookie.as_deref(),
+        &[
+            "uifid",
+            "uifid_temp",
+            "uifidtemp",
+            "UIFID",
+            "UIFID_TEMP",
+            "UIFIDTEMP",
+        ],
+    )
+    .filter(|value| value.len() >= 32)
+    .map(str::to_owned);
     let uifid = if web_sign_required {
         Some(
-            cookie_value(
-                cookie.as_deref(),
-                &[
-                    "uifid",
-                    "uifid_temp",
-                    "uifidtemp",
-                    "UIFID",
-                    "UIFID_TEMP",
-                    "UIFIDTEMP",
-                ],
-            )
-            .filter(|value| value.len() >= 32)
-            .ok_or("此网页接口需要 Cookie 中有效的 UIFID 访客标识，请重新登录或更新 Cookie")?
-            .to_owned(),
+            visitor
+                .clone()
+                .ok_or("此网页接口需要 Cookie 中有效的 UIFID 访客标识，请重新登录或更新 Cookie")?,
         )
     } else {
         None
@@ -134,7 +136,7 @@ pub(crate) fn request(
         .as_millis() as u64;
     let verify_fp = cookie_value(cookie.as_deref(), &["s_v_web_id"])
         .map(str::to_owned)
-        .or_else(|| (!web_sign_required).then(|| crate::web_sign::generate_verify_fp(timestamp)));
+        .or_else(|| (!browser_route).then(|| crate::web_sign::generate_verify_fp(timestamp)));
     let body = form.map(|fields| {
         url::form_urlencoded::Serializer::new(String::new())
             .extend_pairs(
@@ -144,9 +146,13 @@ pub(crate) fn request(
             )
             .finish()
     });
+    let browser_replies = url.path() == "/aweme/v1/web/comment/list/reply/";
     let mut query = url.query_pairs_mut();
     if browser_route {
         query.extend_pairs(BROWSER_PARAMS);
+    }
+    if browser_replies {
+        query.extend_pairs([("item_type", "0"), ("cut_version", "1")]);
     }
     if let Some(uifid) = &uifid {
         query.append_pair("uifid", uifid);
@@ -204,14 +210,16 @@ pub(crate) fn request(
         .header("Accept-Encoding", "gzip, deflate")
         .header("Accept-Language", "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7")
         .header("Referer", referer);
-    if web_sign_required {
+    if browser_route {
         request = request.header("x-tt-argus", "1");
+        if let Some(visitor) = &visitor {
+            let mut value = HeaderValue::from_str(visitor).map_err(|_| "网页访客标识格式无效")?;
+            value.set_sensitive(true);
+            request = request.header("uifid", value);
+        }
     }
-    if let (Some(uifid), Some((signature, timestamp))) = (&uifid, &web_sign) {
-        let mut visitor = HeaderValue::from_str(uifid).map_err(|_| "网页访客标识格式无效")?;
-        visitor.set_sensitive(true);
+    if let Some((signature, timestamp)) = &web_sign {
         request = request
-            .header("uifid", visitor)
             .header("x-secsdk-web-signature", signature)
             .header("x-secsdk-web-expire", timestamp.to_string());
     }
@@ -226,7 +234,20 @@ pub(crate) fn request(
             .header("x-ss-stub", format!("{:X}", Md5::digest(body.as_bytes())))
             .body(body);
     }
-    let response = request.send().map_err(|_| "网页接口请求失败或超时")?;
+    let response = request.send().map_err(|error| {
+        let kind = if error.is_timeout() {
+            "timeout"
+        } else if error.is_connect() {
+            "connect"
+        } else if error.is_body() {
+            "body"
+        } else if error.is_request() {
+            "request"
+        } else {
+            "other"
+        };
+        format!("网页接口请求失败（{kind}）")
+    })?;
     if !response.status().is_success() {
         return Err(format!("网页接口返回 HTTP {}", response.status().as_u16()));
     }
