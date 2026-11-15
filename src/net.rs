@@ -145,8 +145,11 @@ impl NativeClient {
             .append_pair("ts", &timestamp.as_secs().to_string())
             .append_pair("_rticket", &timestamp.as_millis().to_string());
         let host = url.host_str().ok_or("接口缺少主机")?;
-        if self.mode == "duckemu" && host != "aweme.snssdk.com" {
-            return Err("DuckDroid2 签名通道只允许抖音原生 API 主机".into());
+        if self.mode == "duckemu"
+            && host != "aweme.snssdk.com"
+            && !(host == "webcast.amemv.com" && url.path() == "/webcast/room/info/")
+        {
+            return Err("DuckDroid2 签名通道只允许原生 API 和公开房间查询".into());
         }
         let (native_headers, agent) =
             if host == "webcast.amemv.com" && url.path() == "/webcast/user/permission/" {
@@ -173,15 +176,20 @@ impl NativeClient {
                 .duration_since(UNIX_EPOCH)
                 .map_err(|_| "系统时间无效")?
                 .as_secs();
-            let mut value =
-                HeaderValue::from_str(&auth::cookie_header(cookies, host, url.path(), now)?)
-                    .map_err(|_| "Cookie 请求头格式无效")?;
+            let cookie = if host == "webcast.amemv.com" && url.path() == "/webcast/room/info/" {
+                auth::cookie_header(cookies, host, url.path(), now).unwrap_or_default()
+            } else {
+                auth::cookie_header(cookies, host, url.path(), now)?
+            };
+            let mut value = HeaderValue::from_str(&cookie).map_err(|_| "Cookie 请求头格式无效")?;
             value.set_sensitive(true);
             effective.insert("Cookie", value);
         } else {
             effective.extend(native_headers);
         }
-        if host == "aweme.snssdk.com" {
+        if host == "aweme.snssdk.com"
+            || (host == "webcast.amemv.com" && url.path() == "/webcast/room/info/")
+        {
             effective.insert(
                 "x-ss-req-ticket",
                 crate::native_auth::request_ticket()?

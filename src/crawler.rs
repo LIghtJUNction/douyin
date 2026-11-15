@@ -297,8 +297,13 @@ fn fetch(
         if let Some(id) = response["log_pb"]["impr_id"].as_str() {
             search_id = id.to_owned();
         }
-        let mut page = paging::parse_page(&response, list_key, response_cursor)?;
-        if kind == CrawlType::Search {
+        let response_list_key = if kind == CrawlType::Hashtag && response["mix_list"].is_array() {
+            "mix_list"
+        } else {
+            list_key
+        };
+        let mut page = paging::parse_page(&response, response_list_key, response_cursor)?;
+        if matches!(kind, CrawlType::Search | CrawlType::Hashtag) {
             page.items = page
                 .items
                 .into_iter()

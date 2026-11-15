@@ -24,6 +24,7 @@ pub fn collect(
     let mut cursors = BTreeSet::new();
     cursors.insert(cursor.clone());
     let mut pages = 0;
+    let mut empty_pages = 0;
     loop {
         let remaining = (limit > 0).then(|| limit - items.len());
         let page = fetch(&cursor, remaining)?;
@@ -52,8 +53,16 @@ pub fn collect(
                 json!({"items":items,"has_more":false,"cursor":page.cursor,"pages":pages,"limit_reached":false}),
             );
         }
-        if items.len() == before || !cursors.insert(page.cursor.clone()) {
-            return Err("接口分页未前进，停止以避免重复请求和数据截断".into());
+        if !cursors.insert(page.cursor.clone()) {
+            return Err("接口分页游标重复，停止以避免重复请求和数据截断".into());
+        }
+        if items.len() == before {
+            empty_pages += 1;
+            if empty_pages >= 10 {
+                return Err("接口连续 10 页没有新增记录，停止以避免无限翻页".into());
+            }
+        } else {
+            empty_pages = 0;
         }
         cursor = page.cursor;
     }
@@ -139,6 +148,27 @@ mod tests {
             .is_err()
         );
         assert!(parse_page(&json!({"status_code":0}), "aweme_list", "max_cursor").is_err());
+    }
+
+    #[test]
+    fn empty_pages_may_advance_to_a_nonempty_page_within_bounds() {
+        let result = collect("0".into(), 1, "aweme_id", |cursor, _| {
+            Ok(if cursor == "0" {
+                Page {
+                    items: vec![],
+                    cursor: "1".into(),
+                    has_more: true,
+                }
+            } else {
+                Page {
+                    items: vec![json!({"aweme_id":"1"})],
+                    cursor: "2".into(),
+                    has_more: false,
+                }
+            })
+        })
+        .unwrap();
+        assert_eq!(result["items"].as_array().unwrap().len(), 1);
     }
 
     #[test]

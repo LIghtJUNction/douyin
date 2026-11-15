@@ -29,8 +29,10 @@ pub(crate) struct DuckemuClient {
 impl DuckemuClient {
     pub(crate) fn sign(&self, url: &Url, headers: &HeaderMap) -> Result<HeaderMap, String> {
         let path = std::env::var("DOUYIN_DUCKEMU_SOCKET").unwrap_or_else(|_| DEFAULT_SOCKET.into());
-        if url.host_str() != Some("aweme.snssdk.com") {
-            return Err("DuckDroid2 签名通道只允许抖音原生 API 主机".into());
+        if url.host_str() != Some("aweme.snssdk.com")
+            && !(url.host_str() == Some("webcast.amemv.com") && url.path() == "/webcast/room/info/")
+        {
+            return Err("DuckDroid2 签名通道只允许原生 API 和公开房间查询".into());
         }
         let mut input = String::new();
         for (name, value) in headers {

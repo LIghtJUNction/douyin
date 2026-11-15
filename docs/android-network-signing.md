@@ -228,3 +228,9 @@ Field 13 是 Medusa 消息的一个字段，不是完整 X-Medusa。消息其余
 使用官方 LineageOS 21 包（SHA-256 `996d4fc28d495ac0fb831d65e9de98f7fd2749d78c72c9664808623b605f7ee6`）提取系统库后，独立 `dy7_case` 成功返回全部七组头。`tools/start-duckemu.sh` 启动本地服务，项目通过 `DOUYIN_NATIVE_TRANSPORT=duckemu` 实际完成：搜索保存 1 条、评论保存 2 条、单作品详情保存 1 条、用户作品保存 2 条。测试使用隔离目录中的公开参考身份，默认登录配置未修改，临时服务随后关闭。
 
 验收同时修复了实际请求差异：原生 Cookie 允许匿名公开请求但继续拒绝空/过期集合；搜索改为 POST `/aweme/v2/search_feed/` 并附精确正文 MD5；加入 `ts/_rticket` 和按设备可选的 channel/ac/resolution/dpi/cdid；启用 gzip；JSON 尾附数据先经业务状态检查。122 项项目测试通过。该结果证明外部仿真相加本机 CLI 的搜索、评论、详情和作品链路，不代表纯 Rust 签名算法、其他接口或直播已完成。
+
+## 其他公开采集与分页
+
+后续使用同一 DuckDroid2 服务验证 feed、music、hashtag、mix，各保存 1 条。话题接口实际把作品放在 `mix_list[*].aweme_info`，不是 `aweme_list`，已优先解析并复用原有展平。分页器现在允许游标前进的空页，但最多连续 10 页无新增；重复游标仍立即拒绝，避免无限循环和静默截断。123 项项目测试通过。
+
+收藏、关注和粉丝在公开参考身份下返回业务错误或空响应，未宣称成功。多个公开房间的 `live info` 在当前网络均返回 0 字节，因此直播查询仍未验收；仿真签名仅额外放开固定 `/webcast/room/info/`，允许该公开查询无 Cookie，直播权限接口仍保持 direct。

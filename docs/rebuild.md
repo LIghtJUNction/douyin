@@ -229,3 +229,5 @@
 - 通过 gh 找到 djskncxm/DuckDroid2 的抖音 40.8 dy7_case：同版本原生仿真已完成配置注册和 `libmetasec_ml.so + 0x2e01c0` 七头入口，公开记录已跑通搜索、详情、评论和作品。该项目为 GPL-2.0-only，不并入源码，改走独立进程的公开 Unix socket 协议。新增显式 `DOUYIN_NATIVE_TRANSPORT=duckemu` 与 `DOUYIN_DUCKEMU_SOCKET`，Rust 客户端提交最终 URL、CRLF 请求头及同一毫秒票据，校验七组返回头并固定实例；只允许原生 API 主机，不回退手机，默认 direct 不变。模拟 socket 验证请求帧与实例保持，119 项本地测试通过。真实仿真服务和业务接口尚待本项目验收。
 
 - 真实 DuckDroid2 验收已完成。下载并校验官方 LineageOS 21 包（SHA-256 `996d4fc28d495ac0fb831d65e9de98f7fd2749d78c72c9664808623b605f7ee6`），提取系统库后独立 dy7_case 返回全部七组头。通过本地 dy7.sock 与项目 duckemu 传输，实际搜索保存 1 条、评论 2 条、单作品 1 条、用户作品 2 条；使用 target 下隔离公开参考身份，默认配置未改，临时服务关闭。过程中允许匿名公开 Cookie，搜索改为 POST `/aweme/v2/search_feed/` 并计算精确正文 MD5，加入动态 ts/_rticket 和设备可选 channel/ac/resolution/dpi/cdid，启用 gzip，严格处理 JSON 尾附数据。122 项本地测试通过。此结果不证明纯 Rust 签名、其他接口或直播已完成。
+
+- 继续真实 DuckDroid2 验收，新增 feed、music、hashtag、mix 各保存 1 条。话题实际响应使用 `mix_list[*].aweme_info`，已接入该列表与展平；分页允许最多连续 10 个空页但有新游标，重复游标仍拒绝，123 项本地测试通过。收藏、关注和粉丝在当前公开参考身份下分别返回 3002279、8 或空响应，按需要有效登录态处理。公开 live info 在当前网络对多个房间均返回空响应，未记为通过；仅允许该固定路径的仿真签名和空 Cookie 查询，直播权限仍保持 direct。
