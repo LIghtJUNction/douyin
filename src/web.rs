@@ -57,7 +57,9 @@ pub(crate) fn request(
     let mut request = client
         .request(method, url)
         .header("User-Agent", USER_AGENT)
-        .header("Accept-Encoding", "gzip, deflate");
+        .header("Accept", "application/json")
+        .header("Accept-Encoding", "gzip, deflate")
+        .header("x-ss-req-ticket", timestamp.to_string());
     if let Some(cookie) = cookie.filter(|value| !value.trim().is_empty()) {
         let mut value = HeaderValue::from_str(&cookie).map_err(|_| "网页 Cookie 请求头无效")?;
         value.set_sensitive(true);

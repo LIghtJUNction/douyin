@@ -417,6 +417,18 @@ mod tests {
     }
 
     #[test]
+    fn browser_tokens_have_the_expected_shape() {
+        assert_eq!(generate_ms_token(107).len(), 107);
+        assert_eq!(base36(0), "0");
+        assert_eq!(base36(35), "z");
+        assert_eq!(base36(36), "10");
+        let verify = generate_verify_fp(1_700_000_000_000);
+        assert!(verify.starts_with("verify_loyw3v28_"));
+        assert_eq!(verify.len(), "verify_loyw3v28_".len() + 36);
+        assert_eq!(generate_ms_token(0), "");
+    }
+
+    #[test]
     fn primitives_match_standard_and_reference_vectors() {
         assert_eq!(
             hex(&sm3(b"abc")),
