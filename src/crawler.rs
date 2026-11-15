@@ -145,14 +145,12 @@ fn fetch(
     } else {
         target
     };
-    let profile = if kind == CrawlType::Post {
-        Some(
-            if target == client.account_sec_id()? || target == client.account_id()? {
-                client.me()?
-            } else {
-                client.user(target)?
-            },
-        )
+    let profile = if kind == CrawlType::Post && !client.is_web_transport() {
+        Some(if client.is_current_account(target) {
+            client.me()?
+        } else {
+            client.user(target)?
+        })
     } else {
         None
     };
@@ -324,6 +322,12 @@ fn fetch(
             .is_some_and(|count| count > 0)
     {
         return Err("账号资料显示有作品，但接口返回空列表；可能受可见范围、签名或风控影响，无法确认采集完整".into());
+    }
+    if kind == CrawlType::Post
+        && profile.is_none()
+        && result["items"].as_array().is_some_and(Vec::is_empty)
+    {
+        return Err("网页接口返回空作品列表，且没有账号资料可交叉验证，无法确认采集成功".into());
     }
     Ok(result)
 }

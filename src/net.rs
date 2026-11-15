@@ -61,6 +61,15 @@ impl NativeClient {
         field(&self.session["account"], "secUserId")
     }
 
+    pub fn is_current_account(&self, target: &str) -> bool {
+        self.session["account"]["secUserId"].as_str() == Some(target)
+            || self.session["account"]["id"].as_str() == Some(target)
+    }
+
+    pub fn is_web_transport(&self) -> bool {
+        self.mode == "web"
+    }
+
     pub fn get(&self, path: &str, params: &[(String, String)]) -> Result<Value, String> {
         self.get_url(native_url(path)?, params)
     }
@@ -535,6 +544,22 @@ mod tests {
             Some("aweme.snssdk.com")
         );
     }
+    #[test]
+    fn public_targets_do_not_require_native_account_fields() {
+        let mut client = NativeClient {
+            client: Client::new(),
+            session: serde_json::json!({}),
+            phone: RefCell::new(None),
+            duckemu: crate::duckemu::DuckemuClient::default(),
+            mode: "web".into(),
+        };
+        assert!(!client.is_current_account("public-sec-uid"));
+        client.session = serde_json::json!({"account":{"secUserId":"self-sec-uid","id":"42"}});
+        assert!(client.is_current_account("self-sec-uid"));
+        assert!(client.is_current_account("42"));
+        assert!(!client.is_current_account("public-sec-uid"));
+    }
+
     #[test]
     fn native_ids_are_bounded_and_do_not_accept_non_numeric_values() {
         assert!(numeric_id("123", "作品").is_ok());

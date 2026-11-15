@@ -51,6 +51,18 @@ fn cookie_value<'a>(cookie: Option<&'a str>, names: &[&str]) -> Option<&'a str> 
     })
 }
 
+fn route_public(url: &mut Url) -> Result<bool, String> {
+    if url.path() != "/aweme/v1/user/profile/other/" {
+        return Ok(false);
+    }
+    url.set_path("/aweme/v1/web/user/profile/other/");
+    if url.host_str() == Some("aweme.snssdk.com") {
+        url.set_host(Some("www.douyin.com"))
+            .map_err(|_| "网页接口主机无效")?;
+    }
+    Ok(true)
+}
+
 fn route_protected(url: &mut Url) -> Result<bool, String> {
     let browser_path = match url.path() {
         "/aweme/v1/aweme/detail/" => "/aweme/v1/web/aweme/detail/",
@@ -76,7 +88,9 @@ pub(crate) fn request(
     params: &[(String, String)],
     form: Option<&[(String, String)]>,
 ) -> Result<Value, String> {
+    let browser_public = route_public(&mut url)?;
     let web_sign_required = route_protected(&mut url)?;
+    let browser_route = browser_public || web_sign_required;
     if let Ok(host) = std::env::var("DOUYIN_WEB_HOST") {
         if !matches!(host.as_str(), "www.douyin.com" | "aweme.snssdk.com") {
             return Err("DOUYIN_WEB_HOST 仅支持 www.douyin.com 或 aweme.snssdk.com".into());
@@ -121,7 +135,7 @@ pub(crate) fn request(
             .finish()
     });
     let mut query = url.query_pairs_mut();
-    if web_sign_required {
+    if browser_route {
         query.extend_pairs(BROWSER_PARAMS);
     }
     if let Some(uifid) = &uifid {
@@ -264,7 +278,15 @@ mod tests {
             assert_eq!(url.path(), browser);
         }
 
+        let mut profile =
+            Url::parse("https://aweme.snssdk.com/aweme/v1/user/profile/other/").unwrap();
+        assert!(route_public(&mut profile).unwrap());
+        assert!(!route_protected(&mut profile).unwrap());
+        assert_eq!(profile.host_str(), Some("www.douyin.com"));
+        assert_eq!(profile.path(), "/aweme/v1/web/user/profile/other/");
+
         let mut search = Url::parse("https://aweme.snssdk.com/aweme/v2/search_feed/").unwrap();
+        assert!(!route_public(&mut search).unwrap());
         assert!(!route_protected(&mut search).unwrap());
         assert_eq!(search.host_str(), Some("aweme.snssdk.com"));
         assert_eq!(search.path(), "/aweme/v2/search_feed/");
