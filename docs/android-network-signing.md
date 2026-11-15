@@ -236,3 +236,5 @@ Field 13 是 Medusa 消息的一个字段，不是完整 X-Medusa。消息其余
 收藏、关注和粉丝在公开参考身份下返回业务错误或空响应，未宣称成功。多个公开房间的 `live info` 在当前网络均返回 0 字节，因此直播查询仍未验收；仿真签名仅额外放开固定 `/webcast/room/info/`，允许该公开查询无 Cookie，直播权限接口仍保持 direct。
 
 评论的 `--with-replies --reply-limit 1 --format chatml-jsonl` 也已通过真实接口验收，导出包含主评论、真实回复及用户元数据。使用搜索结果中的公开封面 URL 完成 CDN 下载，产物为 ISO Media；`stats` 与 `insights` 离线命令均完成运行。临时签名服务已关闭，默认登录配置未修改。
+
+新增 MCP 原生只读工具 `native_search`、`native_aweme`、`native_comments`、`native_comment_replies`、`native_user_posts`，复用同一 NativeClient 和 DuckDroid2 会话，单页数量限制为 1..=20。真实 stdio 调用全部成功，覆盖搜索结果、作品详情、评论、回复和用户作品；124 项项目测试通过。

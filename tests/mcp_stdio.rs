@@ -103,6 +103,11 @@ fn stdio_negotiates_legacy_protocol_and_executes_real_offline_tool() {
         "im_message_send",
         "openapi_request",
         "native_me",
+        "native_search",
+        "native_aweme",
+        "native_comments",
+        "native_comment_replies",
+        "native_user_posts",
         "native_live_permissions",
     ] {
         assert!(

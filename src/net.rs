@@ -273,6 +273,92 @@ impl NativeClient {
         Ok(value)
     }
 
+    pub fn search(&self, keyword: &str, count: u32) -> Result<Value, String> {
+        if keyword.trim().is_empty() || !(1..=20).contains(&count) {
+            return Err("搜索关键词不能为空，单页数量必须为 1..=20".into());
+        }
+        self.post(
+            "/aweme/v2/search_feed/",
+            &[
+                ("keyword".into(), keyword.into()),
+                ("pull_type".into(), "1".into()),
+                ("offset".into(), "0".into()),
+                ("count".into(), count.to_string()),
+                ("search_source".into(), "normal_search".into()),
+                ("search_id".into(), crate::native_auth::request_ticket()?),
+            ],
+        )
+    }
+
+    pub fn aweme(&self, aweme_id: &str) -> Result<Value, String> {
+        numeric_id(aweme_id, "作品")?;
+        let response = self.get(
+            "/aweme/v1/aweme/detail/",
+            &[("aweme_id".into(), aweme_id.into())],
+        )?;
+        let returned = response["aweme_detail"]["aweme_id"]
+            .as_str()
+            .or_else(|| response["aweme_detail"]["group_id"].as_str());
+        if returned != Some(aweme_id) {
+            return Err("作品详情与请求目标不一致".into());
+        }
+        Ok(response["aweme_detail"].clone())
+    }
+
+    pub fn comments(&self, aweme_id: &str, count: u32) -> Result<Value, String> {
+        numeric_id(aweme_id, "作品")?;
+        if !(1..=20).contains(&count) {
+            return Err("评论单页数量必须为 1..=20".into());
+        }
+        self.get(
+            "/aweme/v2/comment/list/",
+            &[
+                ("aweme_id".into(), aweme_id.into()),
+                ("cursor".into(), "0".into()),
+                ("count".into(), count.to_string()),
+            ],
+        )
+    }
+
+    pub fn comment_replies(
+        &self,
+        aweme_id: &str,
+        comment_id: &str,
+        count: u32,
+    ) -> Result<Value, String> {
+        numeric_id(aweme_id, "作品")?;
+        numeric_id(comment_id, "评论")?;
+        if !(1..=20).contains(&count) {
+            return Err("回复单页数量必须为 1..=20".into());
+        }
+        self.get(
+            "/aweme/v1/comment/list/reply/",
+            &[
+                ("item_id".into(), aweme_id.into()),
+                ("comment_id".into(), comment_id.into()),
+                ("cursor".into(), "0".into()),
+                ("count".into(), count.to_string()),
+            ],
+        )
+    }
+
+    pub fn user_posts(&self, sec_user_id: &str, count: u32) -> Result<Value, String> {
+        if sec_user_id.trim().is_empty()
+            || !sec_user_id.bytes().all(|byte| byte.is_ascii())
+            || !(1..=20).contains(&count)
+        {
+            return Err("用户标识或单页数量无效".into());
+        }
+        self.get(
+            "/aweme/v1/aweme/post/",
+            &[
+                ("sec_user_id".into(), sec_user_id.into()),
+                ("max_cursor".into(), "0".into()),
+                ("count".into(), count.to_string()),
+            ],
+        )
+    }
+
     pub fn me(&self) -> Result<Value, String> {
         let response = self.get("/aweme/v1/user/profile/self/", &[])?;
         let uid = response["user"]["uid"]
@@ -356,6 +442,16 @@ fn response_format_error(bytes: &[u8], content_type: &str, encoding: &str) -> St
     )
 }
 
+fn numeric_id(value: &str, kind: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.parse::<u64>().ok().filter(|id| *id > 0).is_none()
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(format!("{kind} ID 必须是正整数"));
+    }
+    Ok(())
+}
+
 fn field<'a>(value: &'a Value, key: &str) -> Result<&'a str, String> {
     value[key]
         .as_str()
@@ -431,6 +527,14 @@ mod tests {
             Some("aweme.snssdk.com")
         );
     }
+    #[test]
+    fn native_ids_are_bounded_and_do_not_accept_non_numeric_values() {
+        assert!(numeric_id("123", "作品").is_ok());
+        for invalid in ["", "0", "-1", "abc", "123?x=1"] {
+            assert!(numeric_id(invalid, "作品").is_err());
+        }
+    }
+
     #[test]
     fn post_body_digest_uses_the_exact_transmitted_bytes() {
         assert_eq!(body_digest(b""), "D41D8CD98F00B204E9800998ECF8427E");

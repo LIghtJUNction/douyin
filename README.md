@@ -10,7 +10,7 @@
 
 - `auth --adb` 导入原生 Token，核对账号、设备 ID、安装 ID 和应用版本；导入过程中标识变化就拒绝保存。
 - 导入后断开手机、不带 WebView Cookie，账号验证、个人资料、关注列表和直播配置查询都已实测通过；直播配置查询也跑过实际 MCP 调用。
-- 本地 123 项 Rust 测试、Clippy、release 构建和打包校验通过。OBS 目前只验过本地联动，真实推流和直播画面还没验收。
+- 本地 124 项 Rust 测试、Clippy、release 构建和打包校验通过。OBS 目前只验过本地联动，真实推流和直播画面还没验收。
 
 搜索、完整签名、手机身份开播，以及手机端其余功能还在做。下面写的是当前源码的用法，不能把它当成已发布版本的功能清单。
 
@@ -137,7 +137,7 @@ douyin auth cookie-logout
 
 ## 直播配置和 OBS 联动
 
-`douyin live permissions` 查询当前账号的直播配置。CLI 和 MCP 都已实测导入后独立运行，不需要手机连接或 WebView Cookie；会先核对当前账号，只输出认证类型、回放/录制/商城等设置开关、预约直播设置和配置栏目。这个命令不创建直播间，也不把接口返回的配置当作开播成功。MCP 对应工具是 `native_live_permissions`。
+`douyin live permissions` 查询当前账号的直播配置。CLI 和 MCP 都已实测导入后独立运行，不需要手机连接或 WebView Cookie；会先核对当前账号，只输出认证类型、回放/录制/商城等设置开关、预约直播设置和配置栏目。这个命令不创建直播间，也不把接口返回的配置当作开播成功。MCP 对应工具是 `native_live_permissions`。原生只读 MCP 还包括 `native_search`、`native_aweme`、`native_comments`、`native_comment_replies` 和 `native_user_posts`，均已通过真实 stdio 调用验收。
 
 `douyin live info "房间 ID"` 已接入安卓房间查询代码，只输出房间摘要，不打印推拉流地址。摘要中的 `sdk_stream_type` 按已核对的 SDK 规则区分视频、音频、录屏、第三方和媒体房间；字段不完整时为 `null`，这个分类不等同于手机身份开播证明。当前独立请求仍受签名和风控限制，尚未通过真实房间验收。
 

@@ -106,6 +106,44 @@ fn tools() -> Result<Vec<Tool>, String> {
         false,
     )?);
     rows.push(tool(
+        "native_search",
+        "使用安卓原生会话搜索作品，单页最多 20 条",
+        schema(json!({"keyword":{"type":"string","minLength":1},"count":{"type":"integer","minimum":1,"maximum":20,"default":3}}), &["keyword"]),
+        true,
+        true,
+    )?);
+    rows.push(tool(
+        "native_aweme",
+        "使用安卓原生会话读取单作品详情",
+        schema(
+            json!({"aweme_id":{"type":"string","minLength":1}}),
+            &["aweme_id"],
+        ),
+        true,
+        true,
+    )?);
+    rows.push(tool(
+        "native_comments",
+        "使用安卓原生会话读取作品评论首页",
+        schema(json!({"aweme_id":{"type":"string","minLength":1},"count":{"type":"integer","minimum":1,"maximum":20,"default":3}}), &["aweme_id"]),
+        true,
+        true,
+    )?);
+    rows.push(tool(
+        "native_comment_replies",
+        "使用安卓原生会话读取评论回复首页",
+        schema(json!({"aweme_id":{"type":"string","minLength":1},"comment_id":{"type":"string","minLength":1},"count":{"type":"integer","minimum":1,"maximum":20,"default":3}}), &["aweme_id","comment_id"]),
+        true,
+        true,
+    )?);
+    rows.push(tool(
+        "native_user_posts",
+        "使用安卓原生会话读取用户作品首页",
+        schema(json!({"sec_user_id":{"type":"string","minLength":1},"count":{"type":"integer","minimum":1,"maximum":20,"default":3}}), &["sec_user_id"]),
+        true,
+        true,
+    )?);
+    rows.push(tool(
         "native_live_permissions",
         "使用导入的安卓 Token 独立查询当前账号直播配置，不创建直播间",
         schema(json!({}), &[]),
@@ -211,6 +249,29 @@ fn execute(name: &str, args: &Map<String, Value>) -> Result<Value, String> {
         return Ok(
             json!({"authorized":oauth::field(&saved,"accessToken").is_some() && oauth::field(&saved,"openId").is_some(),"client_key_saved":oauth::field(&saved,"clientKey").is_some(),"open_id":saved["openId"],"scopes":saved["scopes"],"expires_in":saved["expiresIn"]}),
         );
+    }
+    if matches!(
+        name,
+        "native_search"
+            | "native_aweme"
+            | "native_comments"
+            | "native_comment_replies"
+            | "native_user_posts"
+    ) {
+        let client = crate::net::NativeClient::saved()?;
+        let count = number(args, "count", 3, 1, 20)? as u32;
+        return match name {
+            "native_search" => client.search(required(args, "keyword")?, count),
+            "native_aweme" => client.aweme(required(args, "aweme_id")?),
+            "native_comments" => client.comments(required(args, "aweme_id")?, count),
+            "native_comment_replies" => client.comment_replies(
+                required(args, "aweme_id")?,
+                required(args, "comment_id")?,
+                count,
+            ),
+            "native_user_posts" => client.user_posts(required(args, "sec_user_id")?, count),
+            _ => unreachable!("native tool names were matched above"),
+        };
     }
     if name == "native_me" {
         return crate::net::NativeClient::saved()?.me();
@@ -404,7 +465,16 @@ mod tests {
                 .unwrap_err()
                 .contains("confirmed=true")
         );
-        assert!(tools().unwrap().iter().any(|t| t.name == "native_me"));
+        for name in [
+            "native_me",
+            "native_search",
+            "native_aweme",
+            "native_comments",
+            "native_comment_replies",
+            "native_user_posts",
+        ] {
+            assert!(tools().unwrap().iter().any(|tool| tool.name == name));
+        }
         assert!(
             tools()
                 .unwrap()

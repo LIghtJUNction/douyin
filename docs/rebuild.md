@@ -235,3 +235,5 @@
 - 继续验收评论 `--with-replies --reply-limit 1 --format chatml-jsonl`，实际导出主评论和一条真实回复及用户元数据。使用搜索结果的公开封面 URL 完成 CDN 下载，文件为 ISO Media；`stats` 和 `insights` 离线命令均可执行。临时签名服务关闭，未修改默认登录配置。
 
 - 新增 `tools/prepare-duckemu.sh`，自动克隆 DuckDroid2、构建、下载并校验官方 ROM、提取系统库，已有文件和构建会复用。已在现有 DuckDroid2 与 ROM 上实际执行成功，配合 start-duckemu.sh 完成一键准备和启动。
+
+- 新增 MCP 原生只读工具 `native_search`、`native_aweme`、`native_comments`、`native_comment_replies`、`native_user_posts`，复用 NativeClient 且单页数量限制为 1..=20。通过真实 stdio 分别调用成功，返回搜索结果、作品详情、评论、回复和用户作品；124 项本地测试通过。
