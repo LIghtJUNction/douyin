@@ -241,3 +241,4 @@
 - 新增网页 Cookie 后端 `DOUYIN_NATIVE_TRANSPORT=web`，实现主站 a_bogus（page_id=6241、aid=6383）、msToken、verifyFp、正文 MD5 和 cookie.json 独立加载；没有原生 session.json 时也可发起公开采集。主站固定 Python 向量逐字节一致，搜索和评论各保存 1 条，作品详情仍返回空响应，用户作品仍需要原生账号上下文。126 项本地测试通过。`DOUYIN_WEB_HOST` 仅允许 www.douyin.com 或 aweme.snssdk.com。
 
 - 网页模式评论 `--with-replies --reply-limit 1 --format chatml-jsonl` 也已实测通过，主评论与回复均可导出。作品详情与 X-Bogus 对照仍为空响应，未把多余签名参数保留在生产路径。
+- 新增网页传输本地 HTTP 端到端测试，核对最终 query 中的 a_bogus/msToken/verifyFp、表单原文和 JSON 业务状态解析，128 项测试通过。

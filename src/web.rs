@@ -118,3 +118,46 @@ pub(crate) fn request(
     crate::net::check_response(&value)?;
     Ok(value)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, mpsc};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn signs_and_sends_the_exact_form_and_parses_the_response() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        crate::store::save_at(
+            &home.path().join("cookie.json"),
+            &serde_json::json!({"cookie":"ttwid=fixture"}),
+        )
+        .unwrap();
+        unsafe { std::env::set_var("DOUYIN_HOME", home.path()) };
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let address = server.server_addr();
+        let (sender, receiver) = mpsc::channel();
+        let server_thread = std::thread::spawn(move || {
+            let mut request = server.recv().unwrap();
+            let target = request.url().to_string();
+            for required in ["a_bogus=", "msToken=", "verifyFp=", "a=1"] {
+                assert!(target.contains(required), "missing {required}");
+            }
+            let mut body = String::new();
+            request.as_reader().read_to_string(&mut body).unwrap();
+            sender.send(body).unwrap();
+            let response = tiny_http::Response::from_string(r#"{"status_code":0}"#).with_header(
+                tiny_http::Header::from_bytes("Content-Type", "application/json").unwrap(),
+            );
+            request.respond(response).unwrap();
+        });
+        let url = Url::parse(&format!("http://{address}/aweme/v2/search_feed/?a=1")).unwrap();
+        let value = request(Method::POST, url, Some(&[("a".into(), "b".into())])).unwrap();
+        assert_eq!(value["status_code"], 0);
+        assert_eq!(receiver.recv().unwrap(), "a=b");
+        server_thread.join().unwrap();
+        unsafe { std::env::remove_var("DOUYIN_HOME") };
+    }
+}
