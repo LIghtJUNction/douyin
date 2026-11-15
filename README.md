@@ -93,7 +93,7 @@ DOUYIN_NATIVE_TRANSPORT=direct douyin me
 DOUYIN_NATIVE_TRANSPORT=duckemu douyin -u "关键词" -t search -l 3 --no-download
 ```
 
-该后端需要另外安装 DuckDroid2、ROM 和匹配的本地签名服务，可用 `DOUYIN_DUCKEMU_SOCKET` 覆盖默认 `/tmp/duckemu-dy7/dy7.sock`。它不会自动启动或回退到手机，也只允许抖音原生 API 主机。模拟 socket 的帧协议和实例保持测试已通过；真实仿真服务及搜索/评论验收仍在进行。
+该后端需要另外安装 DuckDroid2、ROM 和匹配的本地签名服务，可用 `DOUYIN_DUCKEMU_SOCKET` 覆盖默认 `/tmp/duckemu-dy7/dy7.sock`。它不会自动启动或回退到手机，也只允许抖音原生 API 主机。构建 DuckDroid2 后，用 `DUCKEMU_ROOT=/path/to/DuckDroid2 DUCKEMU_ROM_SYMBOLS=/path/to/ROM/symbols tools/start-duckemu.sh` 启动；脚本会拒绝哈希不匹配的目标库。模拟 socket 的帧协议和实例保持测试已通过；真实仿真服务及搜索/评论验收仍在进行。
 
 手机通道原型读取过作品、评论和搜索结果。Rust CLI 的 `me` 在实机跑通过，但后续附加和搜索仍不稳定。它只用于协议研究，不能算完整独立运行已经完成。
 
