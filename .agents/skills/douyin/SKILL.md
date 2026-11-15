@@ -30,7 +30,7 @@ cargo install --path . --locked
 douyin --version
 ```
 
-Require Rust 1.100+ using `rust-toolchain.toml`. The deliberately deleted implementation must not be restored. The webpage Cookie backend now supports `DOUYIN_NATIVE_TRANSPORT=web` with a_bogus, msToken and verifyFp. Main-site fixed Python vectors and real search/comment requests pass. Aweme detail uses the browser route and also implements UIFID-bound WebSign against a public vector, but remains unverified online because the saved Cookie lacks a valid UIFID; user posts remain unverified too. `DOUYIN_WEB_HOST` is limited to www.douyin.com or aweme.snssdk.com.
+Require Rust 1.100+ using `rust-toolchain.toml`. The deliberately deleted implementation must not be restored. The webpage Cookie backend now supports `DOUYIN_NATIVE_TRANSPORT=web` with a_bogus, msToken and verifyFp. Main-site fixed Python vectors and real search/comment requests pass. Aweme detail, user posts, favorites, collections, mix/music posts and feed use their browser routes and implement UIFID-bound WebSign against a public vector, but remain unverified online because the saved Cookie lacks a valid UIFID. `DOUYIN_WEB_HOST` is limited to www.douyin.com or aweme.snssdk.com.
 
 ## Route Authentication
 

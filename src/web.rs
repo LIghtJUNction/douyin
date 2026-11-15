@@ -11,7 +11,7 @@ use url::Url;
 use crate::web_sign::WebSigner;
 
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
-const BROWSER_DETAIL_PARAMS: [(&str, &str); 28] = [
+const BROWSER_PARAMS: [(&str, &str); 28] = [
     ("device_platform", "webapp"),
     ("aid", "6383"),
     ("channel", "channel_pc_web"),
@@ -51,14 +51,21 @@ fn cookie_value<'a>(cookie: Option<&'a str>, names: &[&str]) -> Option<&'a str> 
     })
 }
 
-fn route_detail(url: &mut Url) -> Result<bool, String> {
-    if url.path() != "/aweme/v1/aweme/detail/" {
-        return Ok(false);
-    }
-    url.set_path("/aweme/v1/web/aweme/detail/");
+fn route_protected(url: &mut Url) -> Result<bool, String> {
+    let browser_path = match url.path() {
+        "/aweme/v1/aweme/detail/" => "/aweme/v1/web/aweme/detail/",
+        "/aweme/v1/aweme/post/" => "/aweme/v1/web/aweme/post/",
+        "/aweme/v1/aweme/favorite/" => "/aweme/v1/web/aweme/favorite/",
+        "/aweme/v1/aweme/listcollection/" => "/aweme/v1/web/aweme/listcollection/",
+        "/aweme/v1/mix/aweme/" => "/aweme/v1/web/mix/aweme/",
+        "/aweme/v1/music/aweme/" => "/aweme/v1/web/music/aweme/",
+        "/aweme/v1/feed/" => "/aweme/v1/web/tab/feed/",
+        _ => return Ok(false),
+    };
+    url.set_path(browser_path);
     if url.host_str() == Some("aweme.snssdk.com") {
         url.set_host(Some("www.douyin.com"))
-            .map_err(|_| "网页详情主机无效")?;
+            .map_err(|_| "网页接口主机无效")?;
     }
     Ok(true)
 }
@@ -69,7 +76,7 @@ pub(crate) fn request(
     params: &[(String, String)],
     form: Option<&[(String, String)]>,
 ) -> Result<Value, String> {
-    let browser_detail = route_detail(&mut url)?;
+    let web_sign_required = route_protected(&mut url)?;
     if let Ok(host) = std::env::var("DOUYIN_WEB_HOST") {
         if !matches!(host.as_str(), "www.douyin.com" | "aweme.snssdk.com") {
             return Err("DOUYIN_WEB_HOST 仅支持 www.douyin.com 或 aweme.snssdk.com".into());
@@ -77,7 +84,7 @@ pub(crate) fn request(
         url.set_host(Some(&host)).map_err(|_| "网页主机配置无效")?;
     }
     let cookie = crate::cookie::load()?;
-    let uifid = if browser_detail {
+    let uifid = if web_sign_required {
         Some(
             cookie_value(
                 cookie.as_deref(),
@@ -91,7 +98,7 @@ pub(crate) fn request(
                 ],
             )
             .filter(|value| value.len() >= 32)
-            .ok_or("网页作品详情需要 Cookie 中有效的 UIFID 访客标识，请重新登录或更新 Cookie")?
+            .ok_or("此网页接口需要 Cookie 中有效的 UIFID 访客标识，请重新登录或更新 Cookie")?
             .to_owned(),
         )
     } else {
@@ -114,8 +121,8 @@ pub(crate) fn request(
             .finish()
     });
     let mut query = url.query_pairs_mut();
-    if browser_detail {
-        query.extend_pairs(BROWSER_DETAIL_PARAMS);
+    if web_sign_required {
+        query.extend_pairs(BROWSER_PARAMS);
     }
     if let Some(uifid) = &uifid {
         query.append_pair("uifid", uifid);
@@ -238,14 +245,27 @@ mod tests {
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
-    fn routes_only_native_detail_to_the_browser_endpoint() {
-        let mut detail = Url::parse("https://aweme.snssdk.com/aweme/v1/aweme/detail/").unwrap();
-        assert!(route_detail(&mut detail).unwrap());
-        assert_eq!(detail.host_str(), Some("www.douyin.com"));
-        assert_eq!(detail.path(), "/aweme/v1/web/aweme/detail/");
+    fn routes_only_protected_native_endpoints_to_browser_endpoints() {
+        for (native, browser) in [
+            ("/aweme/v1/aweme/detail/", "/aweme/v1/web/aweme/detail/"),
+            ("/aweme/v1/aweme/post/", "/aweme/v1/web/aweme/post/"),
+            ("/aweme/v1/aweme/favorite/", "/aweme/v1/web/aweme/favorite/"),
+            (
+                "/aweme/v1/aweme/listcollection/",
+                "/aweme/v1/web/aweme/listcollection/",
+            ),
+            ("/aweme/v1/mix/aweme/", "/aweme/v1/web/mix/aweme/"),
+            ("/aweme/v1/music/aweme/", "/aweme/v1/web/music/aweme/"),
+            ("/aweme/v1/feed/", "/aweme/v1/web/tab/feed/"),
+        ] {
+            let mut url = Url::parse(&format!("https://aweme.snssdk.com{native}")).unwrap();
+            assert!(route_protected(&mut url).unwrap(), "{native}");
+            assert_eq!(url.host_str(), Some("www.douyin.com"));
+            assert_eq!(url.path(), browser);
+        }
 
         let mut search = Url::parse("https://aweme.snssdk.com/aweme/v2/search_feed/").unwrap();
-        assert!(!route_detail(&mut search).unwrap());
+        assert!(!route_protected(&mut search).unwrap());
         assert_eq!(search.host_str(), Some("aweme.snssdk.com"));
         assert_eq!(search.path(), "/aweme/v2/search_feed/");
     }
