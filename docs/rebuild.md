@@ -219,3 +219,5 @@
 - 按用户要求通过 gh 检索同版本开源研究，定位到 ShuaiLeiLu/DY_luckybag 中与本项目相同 SHA-256 的 Metasec 库及已恢复部件。新增 Rust metasec::digest、speck、helios：Medusa 64 轮压缩、非标准填充、增量摘要与尾部两分支，Speck-128/256 密钥扩展、分组加密和 PKCS#7，以及显式输入 SDK 上下文/秘密材料的 Helios 值封装。摘要、尾部和 Helios 固定值由公开实现用合成输入生成；Speck 另通过算法作者公开向量。参考仓库未声明许可证，未复制其源码文件，只移植算法事实和公开参数。新增 RustCrypto md-5 用于 Helios 的标准 MD5。108 项本地测试通过；尚未恢复完整 SDK 上下文、Medusa 状态位、其余安全头或服务端验收，未接入生产请求。
 
 - 使用同一公开仓库的提取器对本地固定库重新静态提取，10 个模块全部恢复且无未解析 IR；仅在 target/research 隔离环境安装 Capstone/pyelftools，未加载原生库或访问手机。随后按同版本官方抓帧和 SsInterceptor 证据，为 aweme.snssdk.com 的独立 Token 验证与通用 GET 增加 x-ss-req-ticket 毫秒时间戳，每次传输重试重新取时；Webcast 固定权限端点不变。109 项本地测试通过。这只是已核对传输头，不是完整签名或新增实机验收。
+
+- 继续通过 gh 找到许可兼容的 sunnysky123/hongguo-web pure-sign.js（MIT 仓库，算法源头标注 GPL-3.0），以其公开实现生成黄金向量，未采用另一份 PolyForm 非商业许可代码。新增 metasec::field13，完整实现 SM3(query)、MD5(body)/零摘要、分支选择、重量级 112 轮路径、36 字节直通路径及变种 MD5 路径。9 组合成向量覆盖全部三个分支，输出逐字节一致；新增 sm3 依赖，112 项本地测试通过。该字段尚未组装成完整 Medusa，也未接入生产请求。真实 auth status 显示当前保存登录未获服务端确认，本轮未进行已认证搜索验收。

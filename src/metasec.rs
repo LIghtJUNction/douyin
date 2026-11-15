@@ -2,6 +2,7 @@
 //! This does not initialize Metasec or sign HTTP requests.
 
 pub mod digest;
+pub mod field13;
 pub mod helios;
 pub mod speck;
 
