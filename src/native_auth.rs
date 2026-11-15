@@ -58,6 +58,17 @@ pub(crate) fn validate(session: &Value) -> Result<(), String> {
     Ok(())
 }
 
+pub(crate) fn request_ticket() -> Result<String, String> {
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "系统时间无效")?;
+    Ok(request_ticket_from(duration))
+}
+
+fn request_ticket_from(duration: Duration) -> String {
+    duration.as_millis().to_string()
+}
+
 fn credential_headers(login: &Value) -> Result<HeaderMap, String> {
     let mut headers = HeaderMap::new();
     for (name, field) in [
@@ -318,6 +329,10 @@ fn fetch_account(
         .query(params)
         .headers(headers.clone())
         .header("User-Agent", agent)
+        .header(
+            "x-ss-req-ticket",
+            request_ticket().map_err(VerifyFailure::Rejected)?,
+        )
         .send()
         .map_err(|_| VerifyFailure::Transport("原生 Token 账号验证请求失败"))?;
     if !response.status().is_success() {
@@ -365,6 +380,12 @@ fn parse_profile_account(body: &Value) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn request_ticket_uses_milliseconds_without_truncating_to_seconds() {
+        assert_eq!(request_ticket_from(Duration::new(1, 234_567_890)), "1234");
+        assert!(request_ticket().unwrap().len() >= 13);
+    }
 
     #[test]
     fn retries_only_transport_failures_and_never_repeats_account_rejection() {

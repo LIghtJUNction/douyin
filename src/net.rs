@@ -126,6 +126,9 @@ impl NativeClient {
         // Verified native Token credentials do not depend on WebView Cookie
         // validity. Keep the legacy path for old sessions and other hosts.
         let mut request = self.client.get(url.clone()).header("User-Agent", agent);
+        if host == "aweme.snssdk.com" {
+            request = request.header("x-ss-req-ticket", crate::native_auth::request_ticket()?);
+        }
         if native_headers.is_empty() {
             let cookies = self.session["cookies"]
                 .as_array()

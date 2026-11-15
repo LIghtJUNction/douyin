@@ -217,3 +217,5 @@
 - 新增 Metasec 配置编码器及公开假数据实机 Java 序列化对照。默认 17 项数组与配置样本 JSON 字节均匹配，覆盖 Java trim、键/值类型、整型边界和转义；102 项测试通过。fixture 使用独立 app_process、固定 APK 哈希及版本占位类，只执行实际 APK 的纯 Java 编码器，没有调用原生 SDK 初始化、账号接口或直播写操作，临时 DEX 已清理。该编码器不代表已获得运行时签名上下文。
 
 - 按用户要求通过 gh 检索同版本开源研究，定位到 ShuaiLeiLu/DY_luckybag 中与本项目相同 SHA-256 的 Metasec 库及已恢复部件。新增 Rust metasec::digest、speck、helios：Medusa 64 轮压缩、非标准填充、增量摘要与尾部两分支，Speck-128/256 密钥扩展、分组加密和 PKCS#7，以及显式输入 SDK 上下文/秘密材料的 Helios 值封装。摘要、尾部和 Helios 固定值由公开实现用合成输入生成；Speck 另通过算法作者公开向量。参考仓库未声明许可证，未复制其源码文件，只移植算法事实和公开参数。新增 RustCrypto md-5 用于 Helios 的标准 MD5。108 项本地测试通过；尚未恢复完整 SDK 上下文、Medusa 状态位、其余安全头或服务端验收，未接入生产请求。
+
+- 使用同一公开仓库的提取器对本地固定库重新静态提取，10 个模块全部恢复且无未解析 IR；仅在 target/research 隔离环境安装 Capstone/pyelftools，未加载原生库或访问手机。随后按同版本官方抓帧和 SsInterceptor 证据，为 aweme.snssdk.com 的独立 Token 验证与通用 GET 增加 x-ss-req-ticket 毫秒时间戳，每次传输重试重新取时；Webcast 固定权限端点不变。109 项本地测试通过。这只是已核对传输头，不是完整签名或新增实机验收。
