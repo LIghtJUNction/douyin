@@ -226,10 +226,10 @@ fn fetch(
                 "sec_user_id",
             ),
             CrawlType::Search => (
-                "/aweme/v1/general/search/single/",
-                "data",
+                "/aweme/v2/search_feed/",
+                "aweme_list",
                 "offset",
-                "cursor",
+                "offset",
                 "keyword",
             ),
             CrawlType::Feed => (
@@ -262,10 +262,15 @@ fn fetch(
             }
         }
         if kind == CrawlType::Search {
+            let request_search_id = if search_id.is_empty() {
+                crate::native_auth::request_ticket()?
+            } else {
+                search_id.clone()
+            };
             params.extend([
-                ("search_channel".into(), "aweme_general".into()),
+                ("pull_type".into(), "1".into()),
                 ("search_source".into(), "normal_search".into()),
-                ("search_id".into(), search_id.clone()),
+                ("search_id".into(), request_search_id),
             ]);
             if let Some(sort) = &args.sort_type {
                 params.push(("sort_type".into(), sort.clone()));
@@ -284,7 +289,11 @@ fn fetch(
                 params.push(("filter_duration".into(), duration.clone()));
             }
         }
-        let response = client.get(path, &params)?;
+        let response = if kind == CrawlType::Search {
+            client.post(path, &params)?
+        } else {
+            client.get(path, &params)?
+        };
         if let Some(id) = response["log_pb"]["impr_id"].as_str() {
             search_id = id.to_owned();
         }

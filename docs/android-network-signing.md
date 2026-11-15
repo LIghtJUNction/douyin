@@ -221,4 +221,10 @@ Field 13 是 Medusa 消息的一个字段，不是完整 X-Medusa。消息其余
 
 新增显式 `DOUYIN_NATIVE_TRANSPORT=duckemu` 后端。Rust 客户端以 4 字节大端长度和 JSON 调用本地 `dy7.sock`，把最终 URL、CRLF 请求头及同一个毫秒票据交给仿真器，校验并合并七组返回头，随后固定到同一个原生实例。默认 socket 为 `/tmp/duckemu-dy7/dy7.sock`，可用 `DOUYIN_DUCKEMU_SOCKET` 覆盖。响应帧、签名头名称、文本、尺寸和错误码均有边界检查，错误信息不回显 Cookie 或响应体。
 
-模拟 Unix socket 测试覆盖请求参数、两次调用固定实例和无效响应；后端只允许 `aweme.snssdk.com`，不用于 Webcast 或媒体主机，也不会自动回退到手机。`tools/start-duckemu.sh` 可在已有构建和 ROM 上启动服务，拒绝缺失文件或不匹配的目标库哈希。119 项项目测试通过。真实 DuckDroid2 服务、搜索和评论尚未在本项目完成验收，默认 `direct` 行为不变。
+模拟 Unix socket 测试覆盖请求参数、两次调用固定实例和无效响应；后端只允许 `aweme.snssdk.com`，不用于 Webcast 或媒体主机，也不会自动回退到手机。`tools/start-duckemu.sh` 可在已有构建和 ROM 上启动服务，拒绝缺失文件或不匹配的目标库哈希。默认 `direct` 行为不变。
+
+## DuckDroid2 实机接口验收
+
+使用官方 LineageOS 21 包（SHA-256 `996d4fc28d495ac0fb831d65e9de98f7fd2749d78c72c9664808623b605f7ee6`）提取系统库后，独立 `dy7_case` 成功返回全部七组头。`tools/start-duckemu.sh` 启动本地服务，项目通过 `DOUYIN_NATIVE_TRANSPORT=duckemu` 实际完成：搜索保存 1 条、评论保存 2 条、单作品详情保存 1 条、用户作品保存 2 条。测试使用隔离目录中的公开参考身份，默认登录配置未修改，临时服务随后关闭。
+
+验收同时修复了实际请求差异：原生 Cookie 允许匿名公开请求但继续拒绝空/过期集合；搜索改为 POST `/aweme/v2/search_feed/` 并附精确正文 MD5；加入 `ts/_rticket` 和按设备可选的 channel/ac/resolution/dpi/cdid；启用 gzip；JSON 尾附数据先经业务状态检查。122 项项目测试通过。该结果证明外部仿真相加本机 CLI 的搜索、评论、详情和作品链路，不代表纯 Rust 签名算法、其他接口或直播已完成。

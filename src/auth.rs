@@ -244,7 +244,7 @@ fn verify_account(
 
 pub(crate) fn request_identity(session: &Value) -> Result<Vec<(&str, &str)>, String> {
     let device = &session["device"];
-    Ok(vec![
+    let mut fields = vec![
         ("aid", "1128"),
         ("app_name", "aweme"),
         ("device_platform", "android"),
@@ -263,7 +263,13 @@ pub(crate) fn request_identity(session: &Value) -> Result<Vec<(&str, &str)>, Str
         ("device_brand", text(device, "brand")?),
         ("os_version", text(device, "androidRelease")?),
         ("os_api", text(device, "sdk")?),
-    ])
+    ];
+    for key in ["channel", "ac", "resolution", "dpi", "cdid"] {
+        if !device[key].is_null() {
+            fields.push((key, text(device, key)?));
+        }
+    }
+    Ok(fields)
 }
 
 fn validate_package_metadata(metadata: &Value, dump: &str) -> Result<(), String> {
@@ -573,8 +579,8 @@ pub(crate) fn cookie_header(
             }
         }
     }
-    if !selected.contains_key("sessionid") {
-        return Err("没有该应用域下有效的 sessionid".into());
+    if selected.is_empty() {
+        return Err("没有该应用域下有效的 Cookie".into());
     }
     Ok(selected
         .into_iter()
@@ -794,6 +800,28 @@ mod tests {
     }
 
     #[test]
+    fn identity_includes_optional_channel_display_and_cdid_metadata() {
+        let device = json!({
+            "deviceId":"111","installId":"222","versionName":"40.8.0",
+            "versionCode":"400800","manifestVersionCode":"400801",
+            "updateVersionCode":"40809900","model":"MI 8","brand":"Xiaomi",
+            "androidRelease":"12","sdk":"32","channel":"fixture-channel",
+            "ac":"wifi","resolution":"1080*2248","dpi":"440","cdid":"fixture-cdid"
+        });
+        let session = json!({"device":device});
+        let fields = request_identity(&session).unwrap();
+        for expected in [
+            ("channel", "fixture-channel"),
+            ("ac", "wifi"),
+            ("resolution", "1080*2248"),
+            ("dpi", "440"),
+            ("cdid", "fixture-cdid"),
+        ] {
+            assert!(fields.contains(&expected));
+        }
+    }
+
+    #[test]
     fn distinguishes_api_apk_and_update_versions_without_guessing() {
         let metadata = json!({"package":"com.ss.android.ugc.aweme","versionName":"40.8.0","versionCode":"400800","manifestVersionCode":"400801","updateVersionCode":"40809900","userAgent":"Dalvik/fixture"});
         let dump = "versionCode=400801 minSdk=26 targetSdk=36\nversionName=40.8.0";
@@ -894,6 +922,19 @@ mod tests {
             .is_err()
         );
     }
+    #[test]
+    fn anonymous_native_cookies_are_allowed_for_public_requests() {
+        let rows = vec![
+            cookie(".snssdk.com", "install_id", "222"),
+            cookie(".snssdk.com", "odin_tt", "anonymous-context"),
+        ];
+        assert_eq!(
+            cookie_header(&rows, "aweme.snssdk.com", "/aweme/v2/search_feed/", 1).unwrap(),
+            "install_id=222; odin_tt=anonymous-context"
+        );
+        assert!(cookie_header(&rows, "media.example", "/", 1).is_err());
+    }
+
     #[test]
     fn path_boundaries_and_host_specific_cookie_take_precedence() {
         let mut bad_path = cookie("aweme.snssdk.com", "sessionid", "wrong-path");

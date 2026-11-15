@@ -3,7 +3,9 @@ use std::cell::RefCell;
 use std::io::Read;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use md5::{Digest, Md5};
 use reqwest::{
+    Method,
     blocking::Client,
     header::{HeaderMap, HeaderValue},
     redirect::Policy,
@@ -58,6 +60,10 @@ impl NativeClient {
         self.get_url(native_url(path)?, params)
     }
 
+    pub fn post(&self, path: &str, form: &[(String, String)]) -> Result<Value, String> {
+        self.request_url(Method::POST, native_url(path)?, &[], Some(form))
+    }
+
     pub(crate) fn live_room_info(&self, room_id: &str) -> Result<Value, String> {
         if room_id.parse::<u64>().ok().filter(|id| *id > 0).is_none()
             || !room_id.bytes().all(|b| b.is_ascii_digit())
@@ -85,16 +91,29 @@ impl NativeClient {
         self.get_url(url, &[("sec_anchor_id".into(), sec_id.into())])
     }
 
-    fn get_url(&self, mut url: Url, params: &[(String, String)]) -> Result<Value, String> {
+    fn get_url(&self, url: Url, params: &[(String, String)]) -> Result<Value, String> {
+        self.request_url(Method::GET, url, params, None)
+    }
+
+    fn request_url(
+        &self,
+        method: Method,
+        mut url: Url,
+        params: &[(String, String)],
+        form: Option<&[(String, String)]>,
+    ) -> Result<Value, String> {
         let identity = auth::request_identity(&self.session)?;
-        if params
-            .iter()
-            .any(|(key, _)| identity.iter().any(|(reserved, _)| key == reserved))
-        {
+        if params.iter().any(|(key, _)| {
+            matches!(key.as_str(), "ts" | "_rticket")
+                || identity.iter().any(|(reserved, _)| key == reserved)
+        }) {
             return Err("请求参数不能覆盖登录设备的身份和版本".into());
         }
         let connected = self.phone.borrow().is_some();
         let use_phone = connected || self.mode == "phone";
+        if use_phone && form.is_some() {
+            return Err("手机协议调试通道尚不支持 POST 请求".into());
+        }
         if use_phone {
             if url.host_str() != Some("aweme.snssdk.com") {
                 return Err("手机协议调试通道尚不支持直播接口，请使用 direct".into());
@@ -117,9 +136,14 @@ impl NativeClient {
             check_response(&value)?;
             return Ok(value);
         }
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| "系统时间无效")?;
         url.query_pairs_mut()
             .extend_pairs(identity)
-            .extend_pairs(params.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+            .extend_pairs(params.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+            .append_pair("ts", &timestamp.as_secs().to_string())
+            .append_pair("_rticket", &timestamp.as_millis().to_string());
         let host = url.host_str().ok_or("接口缺少主机")?;
         if self.mode == "duckemu" && host != "aweme.snssdk.com" {
             return Err("DuckDroid2 签名通道只允许抖音原生 API 主机".into());
@@ -138,6 +162,7 @@ impl NativeClient {
             "User-Agent",
             HeaderValue::from_str(agent).map_err(|_| "原生 User-Agent 格式无效")?,
         );
+        effective.insert("Accept-Encoding", HeaderValue::from_static("gzip, deflate"));
         // Verified native Token credentials do not depend on WebView Cookie
         // validity. Keep the legacy path for old sessions and other hosts.
         if native_headers.is_empty() {
@@ -164,15 +189,34 @@ impl NativeClient {
                     .map_err(|_| "毫秒请求票据格式无效")?,
             );
         }
+        let body = form.map(|fields| {
+            url::form_urlencoded::Serializer::new(String::new())
+                .extend_pairs(
+                    fields
+                        .iter()
+                        .map(|(key, value)| (key.as_str(), value.as_str())),
+                )
+                .finish()
+        });
+        if let Some(body) = &body {
+            effective.insert(
+                "Content-Type",
+                HeaderValue::from_static("application/x-www-form-urlencoded"),
+            );
+            effective.insert(
+                "x-ss-stub",
+                HeaderValue::from_str(&body_digest(body.as_bytes()))
+                    .map_err(|_| "正文摘要格式无效")?,
+            );
+        }
         if self.mode == "duckemu" {
             effective.extend(self.duckemu.sign(&url, &effective)?);
         }
-        let response = self
-            .client
-            .get(url.clone())
-            .headers(effective)
-            .send()
-            .map_err(|_| "抖音请求失败或超时")?;
+        let mut request = self.client.request(method, url.clone()).headers(effective);
+        if let Some(body) = body {
+            request = request.body(body);
+        }
+        let response = request.send().map_err(|_| "抖音请求失败或超时")?;
         if !response.status().is_success() {
             return Err(format!("抖音接口返回 HTTP {}", response.status().as_u16()));
         }
@@ -196,8 +240,27 @@ impl NativeClient {
         if bytes.len() > 16 * 1024 * 1024 {
             return Err("接口响应超过 16 MiB 限制".into());
         }
-        let value: Value = serde_json::from_slice(&bytes)
-            .map_err(|_| response_format_error(&bytes, &content_type, &encoding))?;
+        let mut stream = serde_json::Deserializer::from_slice(&bytes).into_iter::<Value>();
+        let value = stream
+            .next()
+            .transpose()
+            .map_err(|error| {
+                format!(
+                    "{}（JSON 错误: {}，行列 {}:{}）",
+                    response_format_error(&bytes, &content_type, &encoding),
+                    error,
+                    error.line(),
+                    error.column()
+                )
+            })?
+            .ok_or_else(|| response_format_error(&bytes, &content_type, &encoding))?;
+        if bytes[stream.byte_offset()..]
+            .iter()
+            .any(|byte| !byte.is_ascii_whitespace())
+        {
+            check_response(&value)?;
+            return Err("接口 JSON 后存在非空白附加数据".into());
+        }
         check_response(&value)?;
         Ok(value)
     }
@@ -241,8 +304,12 @@ impl NativeClient {
     }
 }
 
-fn response_format_error(bytes: &[u8], content_type: &str, encoding: &str) -> &'static str {
-    if bytes.is_empty() {
+fn body_digest(body: &[u8]) -> String {
+    format!("{:X}", Md5::digest(body))
+}
+
+fn response_format_error(bytes: &[u8], content_type: &str, encoding: &str) -> String {
+    let reason = if bytes.is_empty() {
         "接口返回空响应，无法确认成功；签名和服务端验证尚待核对"
     } else if bytes.starts_with(&[0x1f, 0x8b]) || encoding == "gzip" {
         "接口返回未解码的 gzip 数据，需要检查响应解压"
@@ -254,7 +321,31 @@ fn response_format_error(bytes: &[u8], content_type: &str, encoding: &str) -> &'
         "接口返回 Protobuf 数据，当前请求尚未接入该响应解码"
     } else {
         "接口返回非 JSON 内容，可能需要签名或触发风控"
-    }
+    };
+    let mime = content_type
+        .split(';')
+        .next()
+        .map(str::trim)
+        .filter(|value| {
+            matches!(
+                *value,
+                "application/json"
+                    | "application/x-protobuf"
+                    | "application/protobuf"
+                    | "application/octet-stream"
+                    | "text/html"
+                    | "text/plain"
+            )
+        })
+        .unwrap_or("other");
+    let encoding = match encoding {
+        "gzip" | "deflate" | "br" | "zstd" | "identity" => encoding,
+        _ => "other",
+    };
+    format!(
+        "{reason}（{} 字节，Content-Type: {mime}，Content-Encoding: {encoding}）",
+        bytes.len()
+    )
 }
 
 fn field<'a>(value: &'a Value, key: &str) -> Result<&'a str, String> {
@@ -332,6 +423,12 @@ mod tests {
             Some("aweme.snssdk.com")
         );
     }
+    #[test]
+    fn post_body_digest_uses_the_exact_transmitted_bytes() {
+        assert_eq!(body_digest(b""), "D41D8CD98F00B204E9800998ECF8427E");
+        assert_eq!(body_digest(b"abc"), "900150983CD24FB0D6963F7D28E17F72");
+    }
+
     #[test]
     fn http_json_alone_is_not_business_success() {
         assert!(check_response(&json!({"status_code":"0"})).is_ok());
