@@ -84,6 +84,31 @@ impl NativeClient {
         {
             return Err("直播间 ID 必须是正整数".into());
         }
+        if self.mode == "web" {
+            let url = Url::parse("https://live.douyin.com/webcast/room/web/enter/")
+                .map_err(|_| "直播接口地址无效")?;
+            return self.get_url(
+                url,
+                &[
+                    ("aid".into(), "6383".into()),
+                    ("app_name".into(), "douyin_web".into()),
+                    ("live_id".into(), "1".into()),
+                    ("device_platform".into(), "web".into()),
+                    ("language".into(), "zh-CN".into()),
+                    ("enter_from".into(), "web_live".into()),
+                    ("cookie_enabled".into(), "true".into()),
+                    ("screen_width".into(), "1920".into()),
+                    ("screen_height".into(), "1080".into()),
+                    ("browser_language".into(), "zh-CN".into()),
+                    ("browser_platform".into(), "Win32".into()),
+                    ("browser_name".into(), "Chrome".into()),
+                    ("browser_version".into(), "125.0.0.0".into()),
+                    ("web_rid".into(), room_id.into()),
+                    ("enter_source".into(), "".into()),
+                    ("is_need_double_stream".into(), "false".into()),
+                ],
+            );
+        }
         let url = Url::parse("https://webcast.amemv.com/webcast/room/info/")
             .map_err(|_| "直播接口地址无效")?;
         self.get_url(url, &[("room_id".into(), room_id.into())])

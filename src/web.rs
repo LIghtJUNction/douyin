@@ -95,7 +95,9 @@ pub(crate) fn request(
         if !matches!(host.as_str(), "www.douyin.com" | "aweme.snssdk.com") {
             return Err("DOUYIN_WEB_HOST 仅支持 www.douyin.com 或 aweme.snssdk.com".into());
         }
-        url.set_host(Some(&host)).map_err(|_| "网页主机配置无效")?;
+        if url.host_str() != Some("live.douyin.com") {
+            url.set_host(Some(&host)).map_err(|_| "网页主机配置无效")?;
+        }
     }
     let cookie = crate::cookie::load()?;
     let uifid = if web_sign_required {
@@ -171,6 +173,11 @@ pub(crate) fn request(
         None
     };
 
+    let referer = if url.host_str() == Some("live.douyin.com") {
+        "https://live.douyin.com/"
+    } else {
+        "https://www.douyin.com/"
+    };
     let client = Client::builder()
         .redirect(Policy::none())
         .connect_timeout(Duration::from_secs(10))
@@ -183,7 +190,7 @@ pub(crate) fn request(
         .header("Accept", "application/json")
         .header("Accept-Encoding", "gzip, deflate")
         .header("Accept-Language", "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7")
-        .header("Referer", "https://www.douyin.com/");
+        .header("Referer", referer);
     if let (Some(uifid), Some((signature, timestamp))) = (&uifid, &web_sign) {
         let mut visitor = HeaderValue::from_str(uifid).map_err(|_| "网页访客标识格式无效")?;
         visitor.set_sensitive(true);

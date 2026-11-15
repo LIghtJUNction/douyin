@@ -13,7 +13,7 @@ pub struct LiveArgs {
 enum LiveCommand {
     /// 独立查询当前安卓账号的直播权限配置，不创建直播间
     Permissions,
-    /// 使用导入的安卓会话查询直播间（独立签名仍在开发）
+    /// 使用当前采集传输查询公开直播间
     Info { room_id: String },
     /// 通过本机 OBS WebSocket 联动直播
     Obs(ObsArgs),
@@ -350,21 +350,37 @@ fn room_stream_type(room: &Value) -> Option<&'static str> {
 }
 
 fn room_summary(response: &Value, requested: &str) -> Result<Value, String> {
-    let room = &response["data"];
+    let web = response["data"]["data"].is_array();
+    let (room, owner) = if web {
+        (
+            response["data"]["data"]
+                .get(0)
+                .filter(|room| room.is_object())
+                .ok_or("网页直播接口未返回房间")?,
+            &response["data"]["user"],
+        )
+    } else {
+        (&response["data"], &response["data"]["owner"])
+    };
     let id = room["id_str"]
         .as_str()
         .map(str::to_owned)
         .or_else(|| room["id"].as_u64().map(|id| id.to_string()))
         .ok_or("直播接口未返回可识别的房间 ID")?;
-    if id.parse::<u64>().ok().filter(|id| *id > 0) != requested.parse::<u64>().ok() {
+    if !web && id.parse::<u64>().ok().filter(|id| *id > 0) != requested.parse::<u64>().ok() {
         return Err("返回的直播间与请求目标不一致".into());
     }
     // Never dump the room object: it can contain signed stream URLs or keys.
-    Ok(
-        json!({"room_id":id,"title":room["title"].as_str(),"status":crate::net::integer(&room["status"]),
+    Ok(json!({
+        "room_id":if web { requested } else { &id },
+        "live_id":if web { Some(&id) } else { None },
+        "web_rid":if web { Some(requested) } else { None },
+        "title":room["title"].as_str(),
+        "status":crate::net::integer(&room["status"]),
         "sdk_stream_type":room_stream_type(room),
-        "owner_id":room["owner"]["id_str"].as_str(),"owner_name":room["owner"]["nickname"].as_str()}),
-    )
+        "owner_id":owner["id_str"].as_str().or_else(|| owner["sec_uid"].as_str()),
+        "owner_name":owner["nickname"].as_str()
+    }))
 }
 
 #[cfg(test)]
@@ -440,6 +456,17 @@ mod tests {
         assert!(!summary.contains("private"));
         assert!(room_summary(&response, "124").is_err());
         assert!(room_summary(&json!({"data":{}}), "123").is_err());
+
+        let web = json!({"status_code":0,"data":{"data":[{"id_str":"456","title":"web",
+            "status":2,"stream_url":{"flv_pull_url":{"HD":"private-stream-secret"}}}],
+            "user":{"sec_uid":"public-sec-uid","nickname":"owner"}}});
+        let summary = room_summary(&web, "123").unwrap();
+        assert_eq!(summary["room_id"], "123");
+        assert_eq!(summary["web_rid"], "123");
+        assert_eq!(summary["live_id"], "456");
+        assert_eq!(summary["owner_id"], "public-sec-uid");
+        assert!(!summary.to_string().contains("private"));
+        assert!(room_summary(&json!({"data":{"data":[]}}), "123").is_err());
     }
 
     #[test]
