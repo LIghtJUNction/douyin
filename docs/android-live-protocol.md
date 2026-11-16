@@ -1,5 +1,7 @@
 # 安卓开播协议调查
 
+本文件按调查顺序保留各阶段记录。早期段落中的“尚待确认”“下一步”表示当时的进度；当前实现与验证范围见末节 [2026-11-17 实施说明](#2026-11-17-实施说明)。
+
 这份记录区分 APK 静态事实与服务端验收。当前没有调用创建、续播或结束直播接口，也未验证服务端将 CLI 识别为安卓主播。
 
 依据：本机安装的 40.8.0 / APK versionCode 400801，APK SHA-256 `a4e0682ff174d73dbc00d77622037090ee88f164fc0f9b62c324a1234e64ba57`。CraftAnything 定位 classes13.dex 中的 `com.bytedance.android.live.broadcast.preview.api.StartLiveApi`；Android SDK apkanalyzer 进一步核对 Retrofit 参数注解。没有将反编译代码或真实账号数据加入仓库。
@@ -101,3 +103,57 @@ Room.getStreamType 先判断 room_layout=1，再判断 layout=ROOM_TYPE_OFFICIAL
 classes53.dex 的 StreamUrl 字段注解分别包含 rtmp_push_url、rtmps_push_url、push_urls、rtmp_push_url_params、rtmp_pull_url 和 flv_pull_url。它们是不同字段，不能把推流参数或拉流地址当作推流主地址。类定位证据 ev_1df43a08a88da0029e9c2501da12b410694d491ae1e82756fda2f217b5ec09ab；字段注解由 apkanalyzer 对原 APK 核对。
 
 OBS configure-push 输入现允许单独的 rtmp_push_url 字符串，限定 RTMP/RTMPS，并保持原始地址字节：仅在查询串之前寻找最后一个路径分隔符；不解码 %2F，不按签名内的斜杠拆分。空流名称、首尾空白、非法协议及与 server/key 混用均拒绝。只适配明确提供的地址，不自动选择多地址列表，不接受整个未经验证的房间响应，不声明已经取得安卓开播权限。
+
+## 2026-11-17 实施说明
+
+### 已接入的房间生命周期
+
+主播状态映射已按前文的 SDK 监控标签证据接入：`prepare=1`、`play=2`、`pause=3`、`finish=4`。CLI 使用已确认的 `/webcast/room/ping/anchor/` 路径，上报房间 ID、流 ID、状态、原因和来源；当前未选择贴纸，因此省略 `prop_id`。命令实现见 [src/live.rs](../src/live.rs)，网络参数与路径校验见 [src/net.rs](../src/net.rs)。
+
+| 命令 | 已实施行为 |
+| --- | --- |
+| `live create --output` | 创建后保存账号绑定的私密会话，保留房间 ID、流 ID 和明确返回的推流地址；文件可直接交给 OBS |
+| `live continue` | 通过 `/webcast/room/continue/` 和明确提供的 `resolution_key` 请求续播，保存新的私密会话 |
+| `live anchor-status` | 单次上报 `prepare`、`play`、`pause` 或 `finish` |
+| `live heartbeat` | 有限次上报 `play`；显式指定 `--interval` 和 `--count`，失败即停，Ctrl-C 停止后续请求 |
+| `live finish` | 上报 `finish` 后回读同一房间，分别输出请求接受结果与观察到的房间状态 |
+| `live leave` | 保留观众离开房间的语义 |
+
+心跳间隔是用户指定的运行参数，范围为 1–3600 秒，次数范围为 1–10000。每次成功响应后等待所选间隔再发送下一次请求；没有将另一套上报器的 5000 ms 缺省值推广为主直播间协议周期。具体操作顺序见 [直播操作指南](live.md)。
+
+`finish` 输出的 `request_accepted` 表示状态上报被接受，`verification` 和 `observed_room_status` 表示房间回读结果。房间自身的 `status` 枚举继续保留服务端返回的数值，当前不由主播上报码推导“房间已关闭”。回读失败时保留已接受请求的摘要，并返回非零退出码，提示先查询房间状态。
+
+私密会话输出在联网创建前检查目标位置，Unix 权限为 `0600`，最终提交拒绝覆盖现有文件。状态操作先核对会话所属账号，再在线验证当前登录账号；写入、同步或提交失败时，尽可能保留私密恢复文件，并区分文件可能不完整与完整 JSON 尚未确认持久化。普通摘要只返回必要标识和状态，推流凭据写入私密文件。相应解析、账号绑定与错误恢复检查随 [直播模块测试](../src/live.rs) 和 [CLI 测试](../tests/cli.rs) 维护。
+
+### 41.1.0 APK 与手机网络入口
+
+本轮新增核对了 41.1.0 的应用版本组合和网络调用入口。手机桥接按 API、manifest 和更新版本码的完整组合选择实现，当前两个已核对组合如下；选择逻辑见 [手机脚本](../assets/phone/agent.js)。
+
+| 应用版本 | API 版本码 | manifest 版本码 | 更新版本码 | POST 压缩枚举类 |
+| --- | --- | --- | --- | --- |
+| 40.8.0 | `400800` | `400801` | `40809900` | `X.1Dpz` |
+| 41.1.0 | `410100` | `410101` | `41109900` | `X.18sM` |
+
+41.1.0 APK 的 SHA-256 为 `68bba24434f1ae6b461b6923b828e29d559d27b1dfdaf99b080dffdd7bc42a34`。开发机本项目的 `target/research/live-41-1/` 目录保存 `app.apk`、`manifest.xml` 以及 NetworkUtils 和 provider 的 smali 分析材料；该目录受 [仓库忽略规则](../.gitignore) 排除，作为本地核对依据保留。40.8.0 的原有证据引用仍见前文。
+
+两版 GET 均使用 `NetworkUtils.LJII(int, String, List, boolean)`；POST 均使用 `NetworkUtils.LJIIIZ(int, String, byte[], CompressionEnum, String, List)`。POST 依据版本选择上表枚举类的 `NONE`，以 Java `URLEncoder` 按 UTF-8 编码字段，再发送 `application/x-www-form-urlencoded; charset=UTF-8` 正文。字段保留在表单正文中，设备公共参数保留在查询串中；实现与重载签名见 [手机脚本](../assets/phone/agent.js)。
+
+### 固定路由与验证范围
+
+直播凭据调用限定到 `https://webcast.amemv.com` 的已确认路径和 HTTP 方法。原生网络层以共享 `LiveRequestPolicy` 统一 Token 与毫秒票据策略；手机通道使用 [固定直播路径清单](../assets/phone/live-paths.json)，拒绝未知主机、路径、方法及覆盖设备身份的参数。对应实现见 [src/net.rs](../src/net.rs)、[src/phone.rs](../src/phone.rs) 和 [手机脚本](../assets/phone/agent.js)。
+
+本轮自动化检查覆盖状态映射、参数校验、成功响应解析、账号绑定、私密会话恢复，以及手机通道的固定 GET/POST 路由和 UTF-8 表单编码。[手机脚本夹具](../tools/test-phone-agent.mjs) 对两个版本组合检查重载选择、特殊字符保留、错误目的地拒绝和请求期间的账号变化。这些检查使用构造数据与替代网络提供方。
+
+本轮没有向真实房间发送创建、恢复、主播 ping 或 finish 请求，也没有记录完整推流与服务端关闭的实机验收。前文的只读服务端结果保留其原有版本与上下文；本节记录的新增生命周期和 41.1.0 桥接能力，验证范围为代码、APK 入口核对与自动化夹具。
+
+### 41.1.0 身份迁移与只读实机结果
+
+当前设备的 XML `install_id` 已陈旧，Keva 的活跃 `install_id` 与它不同；`device_id` 仍相同。此结论通过 `libkeva.so` 的块地址、记录类型和键引用规则解析 `.chk` 与 `.blk`，并重复读取核对，未采用任意数字串扫描。原生证据保存在同一忽略目录的 `keva-block-init.asm`、`keva-block-pointer.asm`、`keva-private-visit.asm`、`keva-fetch-block.asm`、`keva-fetch-string.asm`、`keva-process-chunk.asm`。
+
+新增 [Keva 只读解析器](../src/keva.rs) 仅接受已核对的 v1 布局，沿活跃键读取对应值，拒绝损坏范围、重复键、错误类型、无效 ID 及不稳定文件对。[登录导入](../src/auth.rs) 使用活跃安装键，继续核对 XML 设备 ID、Token、账号与导入前后身份。新逻辑已在本机 41.1.0 的真实 `auth --adb` 中通过，未公开任何身份值或凭据。
+
+随后以该隔离会话执行 `direct` 只读查询：`live permissions` 成功，返回 17 个配置栏目；`live create-info` 返回 `status_code=0` 且存在数据；`live create-check` 返回 `10001`，错误短文为 `Service Unavailable` 和“服务器打瞌睡了, 请稍后刷新”，底层原因尚未确认。这些查询禁用了外部工具搜索路径，不能将其视为完整签名、开播权限或实际创建房间的证明。完整验收边界见 [直播指南](live.md#8-本轮验收记录2026-11-17)。
+
+此错误响应仅在 `data.message` 与 `data.prompts` 中提供说明，顶层没有 `status_msg`。[网络响应检查](../src/net.rs) 已增加对这些短字符串的有序选择，并以不含真实账号数据的响应结构回归测试覆盖；不输出整个 `data` 或额外票据。`10001` 的响应文本不能单独证明参数错误、账号权限、签名缺失或服务全局故障。
+
+本轮 `phone` 权限与预检调用均在 Frida 附加应用进程阶段失败，没有进入直播接口。应用状态核对未显示 cgroup 冻结；清理已确认无客户端连接的旧 CLI 孤儿服务后，单次权限复验仍失败。手机桥接的固定路径、重载与编码结论因此仍属于静态证据和夹具覆盖；本轮临时服务、文件及转发已清理。

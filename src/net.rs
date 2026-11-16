@@ -1112,11 +1112,18 @@ pub(crate) fn check_response(value: &Value) -> Result<(), String> {
     match integer(&value["status_code"]) {
         Some(0) => Ok(()),
         Some(code) => {
-            let detail = value
-                .get("status_msg")
-                .and_then(Value::as_str)
+            // Webcast errors can put the user-facing explanation under data
+            // instead of status_msg. Select only these short scalar fields;
+            // never dump data, which can also contain credentials or tickets.
+            let detail = ["/status_msg", "/data/prompts", "/data/message"]
+                .into_iter()
+                .filter_map(|path| value.pointer(path).and_then(Value::as_str))
                 .map(str::trim)
-                .filter(|msg| !msg.is_empty())
+                .find(|msg| {
+                    !msg.is_empty()
+                        && msg.chars().count() <= 256
+                        && !msg.chars().any(char::is_control)
+                })
                 .map(|msg| format!("：{msg}"))
                 .unwrap_or_default();
             Err(format!("抖音接口报告错误码 {code}{detail}"))
@@ -1296,6 +1303,35 @@ mod tests {
         ] {
             assert!(check_response(&value).is_err());
         }
+    }
+
+    #[test]
+    fn webcast_errors_preserve_short_explanations_without_dumping_data() {
+        let value = json!({"status_code":10001,"data":{
+            "message":"Service Unavailable","prompts":"服务器打瞌睡了, 请稍后刷新",
+            "ticket":"private-fixture","stream_url":"private-fixture"
+        }});
+        assert_eq!(
+            check_response(&value).unwrap_err(),
+            "抖音接口报告错误码 10001：服务器打瞌睡了, 请稍后刷新"
+        );
+        let mut value = value;
+        value["status_msg"] = json!(" explicit reason ");
+        assert_eq!(
+            check_response(&value).unwrap_err(),
+            "抖音接口报告错误码 10001：explicit reason"
+        );
+        value["status_msg"] = json!(" ");
+        value["data"]["prompts"] = json!("invalid\nmessage");
+        assert_eq!(
+            check_response(&value).unwrap_err(),
+            "抖音接口报告错误码 10001：Service Unavailable"
+        );
+        value["data"]["message"] = json!("x".repeat(257));
+        assert_eq!(
+            check_response(&value).unwrap_err(),
+            "抖音接口报告错误码 10001"
+        );
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # douyin-cli
 
-用 Rust 编写的抖音命令行工具。一个 CLI 即可完成公开内容采集、评论导出、媒体下载、账号互动、文本私信、OpenAPI 调用、MCP 接入和离线数据分析，并支持直播配置查询与 OBS 联动。
+用 Rust 编写的抖音命令行工具。一个 CLI 即可完成公开内容采集、评论导出、媒体下载、账号互动、文本私信、OpenAPI 调用、MCP 接入和离线数据分析，并支持直播房间管理、主播状态上报与 OBS 推流。
 
 [![crates.io](https://img.shields.io/crates/v/douyin-cli.svg)](https://crates.io/crates/douyin-cli)
 [![docs.rs](https://docs.rs/douyin-cli/badge.svg)](https://docs.rs/douyin-cli)
@@ -9,14 +9,13 @@
 
 - 项目地址：https://github.com/LIghtJUNction/douyin
 - 安装包：https://crates.io/crates/douyin-cli
-- 当前版本：`2026.11.16`
+- 源码版本：`2026.11.17`
 - 开发记录：[docs/rebuild.md](docs/rebuild.md)
 
 > 本项目并非抖音官方产品，与抖音及字节跳动无任何隶属关系。请仅操作自己的账号和已获授权的数据，并遵守相关法律、平台规则和内容版权要求。接口与风控策略可能随时变化，命令存在并不代表所有线上场景都已验收，具体边界见下文。
 
 ## 项目特点
 
-- **单一 Rust 可执行文件**：日常运行不需要 Python、Node.js 或 Java。
 - **单一 Rust 可执行文件**：日常运行不依赖 Python、Node.js 或 Java。
 - **三种独立认证方式**：Android 原生登录态、网页 Cookie 和官方 OAuth，各自保存，互不混用。
 - **多种采集后端**：网页接口、需显式启用的 DuckDroid2 签名后端，以及仅用于协议研究的手机通道。
@@ -30,7 +29,7 @@
 
 | 模块 | 主要能力 | 当前情况 |
 | --- | --- | --- |
-| Android 登录 | ADB 导入原生 Token、账号和设备标识核对 | 抖音 40.8.0 已实测；基础请求可脱离手机运行 |
+| Android 登录 | ADB 导入原生 Token、账号和设备标识核对 | 支持已核对的 40.8.0 和 41.1.0 构建；基础请求可脱离手机运行 |
 | 公开采集 | 搜索、作品、用户作品、评论、Feed、音乐、话题、合集 | 网页和 DuckDroid2 的主要只读流程已有真实验收 |
 | 评论导出 | 主评论、楼中楼、raw、ChatML JSON/JSONL | 主评论已实测跨页；网页楼中楼新路由仍可能空响应或超时 |
 | 社交互动 | 作品赞/藏、评论/回复、评论赞/踩、分享链接 | 上述写接口已实测成功；关注尚未完成真实验收 |
@@ -38,8 +37,8 @@
 | 媒体下载 | 视频、图集、封面、标题、直接 CDN URL | 真实 MP4 下载已验收，不向 CDN 发送登录凭据 |
 | OpenAPI | OAuth、资料、评论、官方私信、同源请求 | 本地协议与安全测试通过；依赖真实开放平台应用和权限 |
 | MCP | stdio、回环 Streamable HTTP、事件 Webhook | 真实进程端到端测试通过，含原生只读工具 |
-| 直播 | 权限、预览、房间查询、创建/离开接口 | 权限查询已实测；真实安卓身份开播尚未闭环 |
-| OBS | 推流配置、媒体源、状态和停止 | 本地 OBS 联动已实测；真实抖音推拉流尚未验收 |
+| 直播 | 权限、预览、创建、续播、私密会话、心跳和结束状态 | 41.1.0 权限/预览查询通过；预检返回 10001，真实开播尚未验收 |
+| OBS | 推流配置、媒体源、状态和停止 | 已有本地联动验收；本轮 OBS 未连接，真实抖音推拉流尚未验收 |
 | 离线分析 | 热词、热梗候选、需求线索、作品统计 | 可完全离线运行，不需要登录 |
 
 完整的成功记录、失败记录和研究边界以 [重建验收记录](docs/rebuild.md) 为准。
@@ -73,7 +72,10 @@ cargo install --path . --locked
 源码构建需要 C 编译器和 libclang；首次构建 Frida 依赖时会下载对应开发包。Windows 构建通过 vcpkg 使用动态 SQLite，避免与 Frida 静态库中的 SQLite 重复链接：
 
 ```powershell
-vcpkg install sqlite3:x64-windows
+$vcpkgExe = (Get-Command vcpkg -CommandType Application -ErrorAction Stop).Source
+$env:VCPKG_ROOT = Split-Path -Parent $vcpkgExe
+& $vcpkgExe install sqlite3:x64-windows "--vcpkg-root=$env:VCPKG_ROOT"
+if ($LASTEXITCODE -ne 0) { throw "vcpkg install failed" }
 $env:VCPKGRS_DYNAMIC = "1"
 $env:SQLITE3_LIB_DIR = "$env:VCPKG_ROOT\installed\x64-windows\lib"
 $env:SQLITE3_INCLUDE_DIR = "$env:VCPKG_ROOT\installed\x64-windows\include"
@@ -86,7 +88,7 @@ $env:PATH = "$env:VCPKG_ROOT\installed\x64-windows\bin;$env:PATH"
 
 - 只分析已有 JSON/JSONL：安装后直接使用，不需要手机或登录。
 - 网页公开采集：通常使用网页 Cookie；部分公开接口可以建立匿名访客状态。
-- Android 登录导入：需要 ADB、已登录抖音的 rooted Android 手机；目前原生 Token 导入针对已核对的抖音 40.8.0。
+- Android 登录导入：需要 ADB、已登录抖音的 rooted Android 手机；原生 Token 导入支持已核对的抖音 40.8.0、41.1.0 构建。
 - 发布评论或回复：除导入登录态外，还需要显式 `--adb-guard` 和已连接 rooted 手机。
 - DuckDroid2 后端：需要另行准备 DuckDroid2、匹配 ROM 和本地签名服务。
 - OBS 联动：需要 OBS 28+ 并启用 OBS WebSocket。
@@ -221,7 +223,7 @@ DOUYIN_NATIVE_TRANSPORT=web douyin -t feed -l 20 -p ./downloads
 | `direct` | 默认 | 直接使用导入的 Android 会话；基础账号流程已验证，不代表完整签名已复现 |
 | `web` | `DOUYIN_NATIVE_TRANSPORT=web` | 使用网页 Cookie、主站签名与 WebSign；适合主要公开采集 |
 | `duckemu` | `DOUYIN_NATIVE_TRANSPORT=duckemu` | 显式使用本机 DuckDroid2 服务；主要公开原生只读接口已验收 |
-| `phone` | `DOUYIN_NATIVE_TRANSPORT=phone` | 仅供协议研究，需要手机，当前不稳定，不是自动回退通道 |
+| `phone` | `DOUYIN_NATIVE_TRANSPORT=phone` | 已接入固定直播 GET/POST；按已核对构建匹配，本轮设备仍有 Frida 附加故障 |
 
 网页模式示例：
 
@@ -437,51 +439,54 @@ MCP 写操作需要参数 `confirmed=true`，不会仅凭 schema 描述就执行
 
 ## 直播与 OBS
 
-查询当前 Android 账号的直播配置：
+直播命令支持创建房间、保存推流会话、续播、主播状态上报和有限次心跳。完整操作、结果字段与实机验收范围见 [直播使用指南](docs/live.md)。
+
+先导入当前手机账号并检查开播配置：
 
 ```bash
+douyin auth --adb
 douyin live permissions
 douyin live create-info
 douyin live create-check
-douyin live info "房间 ID"
 ```
 
-已接线的房间生命周期命令：
+将当前直播配置写入 `create-room.json`；最小输入包含 `title`，其余字段取决于账号权限与直播类型。创建成功后，私密会话文件可以直接交给 OBS：
 
 ```bash
-douyin live create --params-file ./create-room.json --yes
+douyin live create --params-file ./create-room.json --output ./live-session.json --yes
+
+douyin live obs configure-push --stream-file ./live-session.json --start --yes
+douyin live obs status
+
+# 间隔与次数由使用者明确指定；此例每次响应后等 5 秒，共发送 120 次。
+douyin live heartbeat --session-file ./live-session.json --interval 5 --count 120 --yes
+
+# 结束时先停止 OBS 推流，再上报主播结束状态并读取房间状态。
+douyin live obs stop --yes
+douyin live finish --session-file ./live-session.json --yes
+```
+
+OBS WebSocket 默认连接本机 `4455`，密码通过 `DOUYIN_OBS_PASSWORD` 提供。`configure-push` 默认仅配置，`--start` 明确启动推流。会话包含签名推流地址，使用私密新文件保存，Unix 权限为 `0600`；终端只输出房间/流标识和保存结果。已有文件会被拒绝覆盖，创建请求成功后的保存失败会给出恢复信息。
+
+续播和单次状态上报：
+
+```bash
+douyin live continue --resolution-key "当前分辨率配置键" --output ./continued-session.json --yes
+douyin live anchor-status --session-file ./live-session.json --status pause --yes
+douyin live info "房间ID"
 douyin live leave --room-id "房间ID" --yes
 ```
 
-`create` 只接受从目标 APK 中恢复的 FieldMap 键，不会猜测或补全参数。
+`anchor-status` 支持 `prepare`、`play`、`pause`、`finish`。`leave` 是观众离开操作。`finish` 分别输出状态请求是否被接受及房间状态的读回结果，读回失败返回非零退出码。`heartbeat` 遇到失败停止，Ctrl-C 会打断等待并阻止后续心跳。
 
-权限、预览和网页公开房间查询已有相应验收，但**创建直播间、持续推流、心跳和结束的完整安卓开播流程尚未验收**。直播配置查询成功并不表示已经开播，也不能证明服务端会把请求识别为 Android 手机直播。
+使用手机内的已核对网络接口时显式设置 `DOUYIN_NATIVE_TRANSPORT=phone`；默认 `direct` 在电脑上发送请求。手机通道按 40.8.0、41.1.0 的具体构建匹配 GET/POST 入口，官方主机与路径名单之外的请求会被拒绝。
 
-OBS 28+ 自带 WebSocket，在 OBS“工具”菜单中启用。默认连接本机 `4455` 端口：
+已有拉流地址也可加入 OBS 场景：
 
 ```bash
-export DOUYIN_OBS_PASSWORD="OBS WebSocket 密码"
-
-douyin live obs status
-douyin live obs configure-push --stream-file ./private-stream.json --yes
 douyin live obs add-source --url-file ./private-pull-url.txt --scene "场景名" --yes
 douyin live obs source-status --name "douyin-live"
-douyin live obs stop --yes
 ```
-
-推流文件支持两种格式，不能混用：
-
-```json
-{"server":"rtmps://推流主机/路径/","key":"推流密钥"}
-```
-
-```json
-{"rtmp_push_url":"完整 RTMP 或 RTMPS 推流地址"}
-```
-
-`configure-push` 默认只配置，不开始推流；增加 `--start` 才启动。`add-source` 把已有直播播放地址加入 OBS 场景；`source-status` 查询播放状态和进度；`stop` 只停止 OBS，不等于结束抖音直播间。
-
-本地 OBS 连接、认证、推流配置、媒体源和播放状态已实测，但真实抖音推拉流画面仍未验收。
 
 ## 离线数据分析
 
@@ -536,7 +541,7 @@ cargo package --locked --offline
 cargo run --locked --offline -- --help
 ```
 
-当前发布版本的验证结果为 **149 项通过、1 项真机测试被忽略**，同时通过了严格 Clippy 检查、release 构建和发布包独立编译验证。本地测试通过并不代表线上接口或真机流程全部可用。
+直播生命周期变更已通过 Rust 测试、严格 Clippy 和手机桥接夹具测试。具体测试数量与设备验收结果记录在 [直播使用指南](docs/live.md)。
 
 修改手机通道脚本时还需运行：
 
