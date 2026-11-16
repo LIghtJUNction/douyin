@@ -234,11 +234,7 @@ impl NativeClient {
     }
 
     pub(crate) fn live_room_info(&self, room_id: &str) -> Result<Value, String> {
-        if room_id.parse::<u64>().ok().filter(|id| *id > 0).is_none()
-            || !room_id.bytes().all(|b| b.is_ascii_digit())
-        {
-            return Err("直播间 ID 必须是正整数".into());
-        }
+        numeric_id(room_id, "直播间")?;
         if self.mode == "web" {
             let url = Url::parse("https://live.douyin.com/webcast/room/web/enter/")
                 .map_err(|_| "直播接口地址无效")?;
@@ -269,11 +265,19 @@ impl NativeClient {
         self.get_url(url, &[("room_id".into(), room_id.into())])
     }
 
-    pub(crate) fn live_permissions(&self) -> Result<Value, String> {
-        if self.mode != "direct" {
-            return Err("直播权限查询使用独立请求，请使用 direct".into());
+    fn require_live_transport(&self) -> Result<(), String> {
+        match self.mode.as_str() {
+            "direct" => {
+                crate::native_auth::live_permission_auth(&self.session)?;
+                Ok(())
+            }
+            "phone" => Ok(()),
+            _ => Err("主播直播接口仅支持 direct 或 phone 传输".into()),
         }
-        crate::native_auth::live_permission_auth(&self.session)?;
+    }
+
+    pub(crate) fn live_permissions(&self) -> Result<Value, String> {
+        self.require_live_transport()?;
         // Confirm the current account before using its anchor identity.
         let me = self.me()?;
         let sec_id = me["sec_uid"]
@@ -287,33 +291,25 @@ impl NativeClient {
 
     /// Preview create_info. `platform=2` is recovered from the 40.8.0 call site.
     pub(crate) fn live_create_info(&self, platform: i32) -> Result<Value, String> {
-        if self.mode != "direct" {
-            return Err("开播预览配置使用独立请求，请使用 direct".into());
-        }
         if platform != 2 {
             return Err("create_info 的 platform 目前只接受 APK 调用点证实的值 2".into());
         }
-        crate::native_auth::live_permission_auth(&self.session)?;
+        self.require_live_transport()?;
         let url = Url::parse("https://webcast.amemv.com/webcast/room/create_info/")
             .map_err(|_| "开播预览接口地址无效")?;
         self.get_url(url, &[("platform".into(), platform.to_string())])
     }
 
     pub(crate) fn live_create_room(&self, form: &[(String, String)]) -> Result<Value, String> {
-        if self.mode != "direct" {
-            return Err("创建直播间使用独立请求，请使用 direct".into());
-        }
-        crate::native_auth::live_permission_auth(&self.session)?;
+        self.require_live_transport()?;
         let url = Url::parse("https://webcast.amemv.com/webcast/room/create/")
             .map_err(|_| "开播接口地址无效")?;
         self.request_url(Method::POST, url, &[], Some(form))
     }
 
     pub(crate) fn live_leave_room(&self, room_id: &str) -> Result<Value, String> {
-        if self.mode != "direct" {
-            return Err("离开直播间使用独立请求，请使用 direct".into());
-        }
-        crate::native_auth::live_permission_auth(&self.session)?;
+        numeric_id(room_id, "直播间")?;
+        self.require_live_transport()?;
         let url = Url::parse("https://webcast.amemv.com/webcast/room/leave/")
             .map_err(|_| "离开直播间接口地址无效")?;
         self.request_url(
@@ -326,9 +322,6 @@ impl NativeClient {
 
     /// create_check QueryMap. Only pass keys recovered from the APK call site.
     pub(crate) fn live_create_check(&self, params: &[(String, String)]) -> Result<Value, String> {
-        if self.mode != "direct" {
-            return Err("开播检查使用独立请求，请使用 direct".into());
-        }
         const ALLOWED: &[&str] = &[
             "introduction",
             "digg_auth",
@@ -348,10 +341,42 @@ impl NativeClient {
                 return Err(format!("create_check 不接受未证实的参数: {key}"));
             }
         }
-        crate::native_auth::live_permission_auth(&self.session)?;
+        self.require_live_transport()?;
         let url = Url::parse("https://webcast.amemv.com/webcast/room/create_check/")
             .map_err(|_| "开播检查接口地址无效")?;
         self.get_url(url, params)
+    }
+
+    /// Resume the current account's room; this GET changes room state.
+    pub(crate) fn live_continue_room(&self, resolution_key: &str) -> Result<Value, String> {
+        if resolution_key.is_empty()
+            || resolution_key.trim() != resolution_key
+            || resolution_key.len() > 128
+            || resolution_key.chars().any(char::is_control)
+        {
+            return Err("续播 resolution_key 必须是 1..=128 字节且不含控制字符或首尾空白".into());
+        }
+        self.require_live_transport()?;
+        let url = Url::parse("https://webcast.amemv.com/webcast/room/continue/")
+            .map_err(|_| "续播接口地址无效")?;
+        self.get_url(url, &[("resolution_key".into(), resolution_key.into())])
+    }
+
+    /// StatusApi's prepare/play/pause/finish report. An accepted report is not
+    /// itself a room-state confirmation; callers must inspect room info.
+    pub(crate) fn live_anchor_status(
+        &self,
+        room_id: &str,
+        stream_id: &str,
+        status: u8,
+        reason_no: u32,
+        source: &str,
+    ) -> Result<Value, String> {
+        let params = live_anchor_params(room_id, stream_id, status, reason_no, source)?;
+        self.require_live_transport()?;
+        let url = Url::parse("https://webcast.amemv.com/webcast/room/ping/anchor/")
+            .map_err(|_| "主播状态接口地址无效")?;
+        self.get_url(url, &params)
     }
 
     fn get_url(&self, url: Url, params: &[(String, String)]) -> Result<Value, String> {
@@ -400,15 +425,8 @@ impl NativeClient {
         {
             return Err("DuckDroid2 签名通道只允许原生 API、imapi 和公开房间查询".into());
         }
-        let (native_headers, agent) = if host == "webcast.amemv.com"
-            && matches!(
-                url.path(),
-                "/webcast/user/permission/"
-                    | "/webcast/room/create_info/"
-                    | "/webcast/room/create_check/"
-                    | "/webcast/room/create/"
-                    | "/webcast/room/leave/"
-            ) {
+        let live_policy = live_request_policy(&method, &url);
+        let (native_headers, agent) = if live_policy.is_some_and(|policy| policy.token) {
             crate::native_auth::live_permission_auth(&self.session)?
         } else {
             (
@@ -462,17 +480,7 @@ impl NativeClient {
         } else if !has_token && !allow_empty_cookie && host != "imapi.snssdk.com" {
             return Err("登录配置缺少 Cookie".into());
         }
-        if host == "aweme.snssdk.com"
-            || (host == "webcast.amemv.com"
-                && matches!(
-                    url.path(),
-                    "/webcast/room/info/"
-                        | "/webcast/room/create_info/"
-                        | "/webcast/room/create_check/"
-                        | "/webcast/room/create/"
-                        | "/webcast/room/leave/"
-                ))
-        {
+        if host == "aweme.snssdk.com" || live_policy.is_some_and(|policy| policy.ticket) {
             effective.insert(
                 "x-ss-req-ticket",
                 crate::native_auth::request_ticket()?
@@ -548,21 +556,26 @@ impl NativeClient {
         }
         let connected = self.phone.borrow().is_some();
         let use_phone = connected || self.mode == "phone";
-        if use_phone && form.is_some() {
-            return Err("手机协议调试通道尚不支持 POST 请求".into());
-        }
         if use_phone {
-            if url.host_str() != Some("aweme.snssdk.com") {
-                return Err("手机协议调试通道尚不支持直播接口，请使用 direct".into());
+            let live = live_request_policy(&method, &url).is_some();
+            if !live {
+                if url.host_str() != Some("aweme.snssdk.com") {
+                    return Err("手机协议调试通道仅支持原生 API 和已确认的直播接口".into());
+                }
+                if method != Method::GET || form.is_some() {
+                    return Err("手机协议调试通道的普通 API 仅支持 GET 请求".into());
+                }
             }
             let mut phone = self.phone.borrow_mut();
             if phone.is_none() {
                 *phone = Some(crate::phone::PhoneClient::connect(&self.session)?);
             }
-            let result = phone
-                .as_mut()
-                .ok_or("手机通道未初始化")?
-                .get(url.path(), params);
+            let client = phone.as_mut().ok_or("手机通道未初始化")?;
+            let result = if live {
+                client.request(method.as_str(), url.as_str(), params, form)
+            } else {
+                client.get(url.path(), params)
+            };
             let value = match result {
                 Ok(value) => value,
                 Err(error) => {
@@ -588,15 +601,8 @@ impl NativeClient {
         {
             return Err("DuckDroid2 签名通道只允许原生 API 和公开房间查询".into());
         }
-        let (native_headers, agent) = if host == "webcast.amemv.com"
-            && matches!(
-                url.path(),
-                "/webcast/user/permission/"
-                    | "/webcast/room/create_info/"
-                    | "/webcast/room/create_check/"
-                    | "/webcast/room/create/"
-                    | "/webcast/room/leave/"
-            ) {
+        let live_policy = live_request_policy(&method, &url);
+        let (native_headers, agent) = if live_policy.is_some_and(|policy| policy.token) {
             crate::native_auth::live_permission_auth(&self.session)?
         } else {
             (
@@ -640,17 +646,7 @@ impl NativeClient {
         } else if !has_token && !allow_empty_cookie {
             return Err("登录配置缺少 Cookie".into());
         }
-        if host == "aweme.snssdk.com"
-            || (host == "webcast.amemv.com"
-                && matches!(
-                    url.path(),
-                    "/webcast/room/info/"
-                        | "/webcast/room/create_info/"
-                        | "/webcast/room/create_check/"
-                        | "/webcast/room/create/"
-                        | "/webcast/room/leave/"
-                ))
-        {
+        if host == "aweme.snssdk.com" || live_policy.is_some_and(|policy| policy.ticket) {
             effective.insert(
                 "x-ss-req-ticket",
                 crate::native_auth::request_ticket()?
@@ -890,6 +886,73 @@ impl NativeClient {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LiveRequestPolicy {
+    token: bool,
+    ticket: bool,
+}
+
+/// Keep authentication and request-ticket routing identical in both transports.
+/// The exception applies only to these HTTPS endpoints and their recovered verbs.
+fn live_request_policy(method: &Method, url: &Url) -> Option<LiveRequestPolicy> {
+    if url.scheme() != "https"
+        || url.host_str() != Some("webcast.amemv.com")
+        || url.port_or_known_default() != Some(443)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+    {
+        return None;
+    }
+    let path = url.path();
+    let expected = match path {
+        "/webcast/room/create/" | "/webcast/room/leave/" => Method::POST,
+        "/webcast/room/info/"
+        | "/webcast/user/permission/"
+        | "/webcast/room/create_info/"
+        | "/webcast/room/create_check/"
+        | "/webcast/room/continue/"
+        | "/webcast/room/ping/anchor/" => Method::GET,
+        _ => return None,
+    };
+    if *method != expected {
+        return None;
+    }
+    Some(LiveRequestPolicy {
+        token: path != "/webcast/room/info/",
+        ticket: path != "/webcast/user/permission/",
+    })
+}
+
+fn live_anchor_params(
+    room_id: &str,
+    stream_id: &str,
+    status: u8,
+    reason_no: u32,
+    source: &str,
+) -> Result<Vec<(String, String)>, String> {
+    numeric_id(room_id, "直播间")?;
+    numeric_id(stream_id, "直播流")?;
+    if !(1..=4).contains(&status) {
+        return Err("主播状态仅支持 prepare=1、play=2、pause=3、finish=4".into());
+    }
+    if reason_no > i32::MAX as u32 {
+        return Err("主播状态 reason_no 超出安卓有符号整数范围".into());
+    }
+    if source.len() > 128 || source.chars().any(char::is_control) {
+        return Err("主播状态 source 不能超过 128 字节或包含控制字符".into());
+    }
+    // No active sticker is selected by this CLI. Omit prop_id instead of
+    // inventing a device-specific value.
+    Ok(vec![
+        ("room_id".into(), room_id.into()),
+        ("stream_id".into(), stream_id.into()),
+        ("status".into(), status.to_string()),
+        ("reason_no".into(), reason_no.to_string()),
+        ("source".into(), source.into()),
+    ])
+}
+
 fn body_digest(body: &[u8]) -> String {
     format!("{:X}", Md5::digest(body))
 }
@@ -1082,6 +1145,116 @@ mod tests {
             Some("aweme.snssdk.com")
         );
     }
+    #[test]
+    fn live_auth_policy_is_bound_to_the_exact_https_endpoint_and_method() {
+        let cases = [
+            (Method::GET, "/webcast/room/info/", false, true),
+            (Method::GET, "/webcast/user/permission/", true, false),
+            (Method::GET, "/webcast/room/create_info/", true, true),
+            (Method::GET, "/webcast/room/create_check/", true, true),
+            (Method::POST, "/webcast/room/create/", true, true),
+            (Method::POST, "/webcast/room/leave/", true, true),
+            (Method::GET, "/webcast/room/continue/", true, true),
+            (Method::GET, "/webcast/room/ping/anchor/", true, true),
+        ];
+        for (method, path, token, ticket) in cases {
+            let url = Url::parse(&format!("https://webcast.amemv.com{path}?room_id=123")).unwrap();
+            assert_eq!(
+                live_request_policy(&method, &url),
+                Some(LiveRequestPolicy { token, ticket }),
+                "{path}"
+            );
+            let wrong_method = if method == Method::GET {
+                Method::POST
+            } else {
+                Method::GET
+            };
+            assert!(live_request_policy(&wrong_method, &url).is_none());
+        }
+        for raw in [
+            "http://webcast.amemv.com/webcast/room/ping/anchor/",
+            "https://webcast.amemv.com.evil.invalid/webcast/room/ping/anchor/",
+            "https://evil.invalid/webcast/room/ping/anchor/",
+            "https://webcast.amemv.com:8443/webcast/room/ping/anchor/",
+            "https://user@webcast.amemv.com/webcast/room/ping/anchor/",
+            "https://webcast.amemv.com/webcast/room/ping/anchor/#secret",
+            "https://webcast.amemv.com/webcast/room/unknown/",
+            "https://webcast.amemv.com/webcast/room/ping/anchor/child",
+        ] {
+            assert!(
+                live_request_policy(&Method::GET, &Url::parse(raw).unwrap()).is_none(),
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn anchor_reports_validate_identity_and_keep_distinct_room_and_stream_ids() {
+        for status in 1..=4 {
+            let params = live_anchor_params("123", "456", status, 0, "anchor_ping").unwrap();
+            let fields: std::collections::BTreeMap<_, _> = params.into_iter().collect();
+            assert_eq!(fields["room_id"], "123");
+            assert_eq!(fields["stream_id"], "456");
+            assert_eq!(fields["status"], status.to_string());
+            assert_eq!(fields["reason_no"], "0");
+            assert_eq!(fields["source"], "anchor_ping");
+            assert!(!fields.contains_key("prop_id"));
+        }
+        assert!(live_anchor_params("1", "2", 3, 0, "").is_ok());
+        for invalid in ["", "0", "-1", "1&status=4", "18446744073709551616"] {
+            assert!(live_anchor_params(invalid, "2", 2, 0, "").is_err());
+            assert!(live_anchor_params("1", invalid, 2, 0, "").is_err());
+        }
+        assert!(live_anchor_params("1", "2", 0, 0, "").is_err());
+        assert!(live_anchor_params("1", "2", 5, 0, "").is_err());
+        assert!(live_anchor_params("1", "2", 4, u32::MAX, "").is_err());
+        assert!(live_anchor_params("1", "2", 4, 0, "anchor\nping").is_err());
+        assert!(live_anchor_params("1", "2", 4, 0, &"x".repeat(129)).is_err());
+    }
+
+    #[test]
+    fn lifecycle_validates_parameters_before_loading_credentials_or_using_transport() {
+        let client = NativeClient {
+            client: Client::new(),
+            session: json!({}),
+            phone: RefCell::new(None),
+            duckemu: crate::duckemu::DuckemuClient::default(),
+            mode: "web".into(),
+        };
+        for invalid in ["", " HD", "HD ", "HD\n", &"x".repeat(129)] {
+            assert!(
+                client
+                    .live_continue_room(invalid)
+                    .unwrap_err()
+                    .contains("resolution_key")
+            );
+        }
+        assert!(
+            client
+                .live_anchor_status("0", "2", 2, 0, "")
+                .unwrap_err()
+                .contains("直播间")
+        );
+        assert!(
+            client
+                .live_anchor_status("1", "0", 2, 0, "")
+                .unwrap_err()
+                .contains("直播流")
+        );
+        assert!(
+            client
+                .live_continue_room("HD")
+                .unwrap_err()
+                .contains("direct")
+        );
+        assert!(
+            client
+                .live_anchor_status("1", "2", 2, 0, "")
+                .unwrap_err()
+                .contains("direct")
+        );
+    }
+
     #[test]
     fn public_targets_do_not_require_native_account_fields() {
         let mut client = NativeClient {

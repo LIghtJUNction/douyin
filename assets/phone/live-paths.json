@@ -1,0 +1,14 @@
+{
+  "GET": [
+    "/webcast/user/permission/",
+    "/webcast/room/info/",
+    "/webcast/room/create_info/",
+    "/webcast/room/create_check/",
+    "/webcast/room/continue/",
+    "/webcast/room/ping/anchor/"
+  ],
+  "POST": [
+    "/webcast/room/create/",
+    "/webcast/room/leave/"
+  ]
+}

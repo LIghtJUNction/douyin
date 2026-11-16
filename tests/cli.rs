@@ -76,6 +76,97 @@ fn obs_changes_require_confirmation_before_files_or_connections() {
 }
 
 #[test]
+fn live_mutations_require_confirmation_before_reading_private_files() {
+    let home = tempfile::tempdir().unwrap();
+    for args in [
+        vec!["live", "create", "--params-file", "missing-private-input"],
+        vec![
+            "live",
+            "continue",
+            "--resolution-key",
+            "fixture",
+            "--output",
+            "missing-private-input",
+        ],
+        vec![
+            "live",
+            "anchor-status",
+            "--session-file",
+            "missing-private-input",
+            "--status",
+            "play",
+        ],
+        vec!["live", "finish", "--session-file", "missing-private-input"],
+        vec![
+            "live",
+            "heartbeat",
+            "--session-file",
+            "missing-private-input",
+            "--interval",
+            "10",
+            "--count",
+            "2",
+        ],
+        vec!["live", "leave", "--room-id", "123"],
+    ] {
+        let output = run(home.path(), &args);
+        assert!(!output.status.success(), "{args:?}");
+        assert!(output.stdout.is_empty());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("需要 --yes"), "{error}");
+        assert!(!error.contains("missing-private-input"));
+    }
+}
+
+#[test]
+fn live_create_refuses_existing_output_before_authentication() {
+    let home = tempfile::tempdir().unwrap();
+    let params = home.path().join("create.json");
+    let output = home.path().join("private-session.json");
+    std::fs::write(&params, r#"{"title":"fixture"}"#).unwrap();
+    std::fs::write(&output, b"private-existing-data").unwrap();
+    let result = run(
+        home.path(),
+        &[
+            "live",
+            "create",
+            "--params-file",
+            params.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+            "--yes",
+        ],
+    );
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("拒绝覆盖"));
+    assert!(!String::from_utf8_lossy(&result.stderr).contains("private-existing-data"));
+    assert_eq!(std::fs::read(output).unwrap(), b"private-existing-data");
+}
+
+#[test]
+fn live_heartbeat_requires_a_bounded_explicit_schedule() {
+    let home = tempfile::tempdir().unwrap();
+    for (interval, count) in [("0", "1"), ("3601", "1"), ("1", "0"), ("1", "10001")] {
+        let output = run(
+            home.path(),
+            &[
+                "live",
+                "heartbeat",
+                "--session-file",
+                "missing-private-input",
+                "--interval",
+                interval,
+                "--count",
+                count,
+                "--yes",
+            ],
+        );
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+    }
+}
+
+#[test]
 fn manual_oauth_setup_is_isolated_and_does_not_print_secrets() {
     let home = tempfile::tempdir().unwrap();
     let output = run(

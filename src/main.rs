@@ -12,7 +12,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// 直播与 OBS 联动（安卓开播接口仍在开发）
+    /// 直播权限、房间管理、主播状态上报与 OBS 推流
     Live(douyin_cli::live::LiveArgs),
     #[command(name = "__phone-worker", hide = true)]
     PhoneWorker,

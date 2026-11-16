@@ -11,11 +11,23 @@ const HOST: &str = "aweme.snssdk.com";
 const TOKEN_URI: &str = "content://com.ss.android.ugc.aweme.TokenObjectProvider/get_token_object";
 
 pub(crate) fn supported(session: &Value) -> bool {
+    passport_sdk_version(session).is_some()
+}
+
+/// Exact installed-build profiles verified from their manifest and Token SDK.
+/// The Token protocol version stays at 2; Passport's header is build-specific.
+fn passport_sdk_version(session: &Value) -> Option<&'static str> {
     let d = &session["device"];
-    d["versionName"] == "40.8.0"
-        && d["versionCode"] == "400800"
-        && d["manifestVersionCode"] == "400801"
-        && d["updateVersionCode"] == "40809900"
+    match (
+        d["versionName"].as_str()?,
+        d["versionCode"].as_str()?,
+        d["manifestVersionCode"].as_str()?,
+        d["updateVersionCode"].as_str()?,
+    ) {
+        ("40.8.0", "400800", "400801", "40809900") => Some("60760"),
+        ("41.1.0", "410100", "410101", "41109900") => Some("60770"),
+        _ => None,
+    }
 }
 
 fn header_text<'a>(value: &'a Value, field: &str, max: usize) -> Result<&'a str, String> {
@@ -39,7 +51,7 @@ pub(crate) fn validate(session: &Value) -> Result<(), String> {
         || login["schema"] != 1
         || login["source"] != "android-token-provider"
         || login["sdkVersion"] != "2"
-        || login["passportSdkVersion"] != "60760"
+        || login["passportSdkVersion"].as_str() != passport_sdk_version(session)
         || login["boundUserId"] != session["account"]["id"]
         || login["boundUserId"].as_str().is_none_or(|v| {
             v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()) || v.bytes().all(|b| b == b'0')
@@ -230,9 +242,9 @@ pub(crate) fn confirm_import(adb: &Adb, session: &Value) -> Result<(), String> {
 /// Import the Token, its companion routing tag and protocol metadata, not signing keys.
 /// Existing Cookie-only sessions remain supported for uninspected APK builds.
 pub(crate) fn import(adb: &Adb, session: &Value) -> Result<Option<(Value, Value)>, String> {
-    if !supported(session) {
+    let Some(passport_version) = passport_sdk_version(session) else {
         return Ok(None);
-    }
+    };
     let read = || read_token(adb);
     // login_adb opens the app before reading device/install identity. Do not
     // launch it here, after the candidate identity snapshot has been taken.
@@ -257,7 +269,7 @@ pub(crate) fn import(adb: &Adb, session: &Value) -> Result<Option<(Value, Value)
         .map_err(|_| "系统时间无效")?
         .as_secs();
     let mut login = json!({"schema":1,"source":"android-token-provider","token":token.token.clone(),
-        "sdkVersion":"2","passportSdkVersion":"60760","userAgent":agent,
+        "sdkVersion":"2","passportSdkVersion":passport_version,"userAgent":agent,
         "verifiedAt":timestamp});
     if let Some(tag) = &token.tlb_tag {
         login["tokenTlbTag"] = json!(tag);
@@ -492,6 +504,64 @@ mod tests {
     }
 
     #[test]
+    fn inspected_41_1_build_uses_its_own_passport_sdk_and_preserves_account_binding() {
+        let mut current = session();
+        current["device"] = json!({
+            "versionName":"41.1.0", "versionCode":"410100",
+            "manifestVersionCode":"410101", "updateVersionCode":"41109900"
+        });
+        assert!(supported(&current));
+        assert_eq!(passport_sdk_version(&current), Some("60770"));
+        // An older build's credential metadata must never silently migrate.
+        assert!(validate(&current).is_err());
+        current["nativeAuth"]["passportSdkVersion"] = json!("60770");
+        validate(&current).unwrap();
+        let (h, agent) = live_permission_auth(&current).unwrap();
+        assert_eq!(h["passport-sdk-version"], "60770");
+        assert_eq!(h["sdk-version"], "2");
+        assert!(h["x-tt-token"].is_sensitive());
+        assert!(h.get("cookie").is_none());
+        assert_eq!(agent, "fixture-sdk-agent");
+        assert!(headers(&current, "webcast.amemv.com").unwrap().is_empty());
+        current["nativeAuth"]["boundUserId"] = json!("456");
+        assert!(validate(&current).is_err());
+    }
+
+    #[test]
+    fn version_profiles_reject_mixed_unknown_and_incomplete_builds() {
+        let mut current = session();
+        current["device"] = json!({
+            "versionName":"41.1.0", "versionCode":"410100",
+            "manifestVersionCode":"410101", "updateVersionCode":"41109900"
+        });
+        current["nativeAuth"]["passportSdkVersion"] = json!("60770");
+        for (key, value) in [
+            ("versionName", "40.8.0"),
+            ("versionCode", "400800"),
+            ("manifestVersionCode", "400801"),
+            ("updateVersionCode", "40809900"),
+            ("manifestVersionCode", "410102"),
+            ("versionName", "41.2.0"),
+        ] {
+            let mut mixed = current.clone();
+            mixed["device"][key] = json!(value);
+            assert!(!supported(&mixed), "{key}");
+            assert!(validate(&mixed).is_err(), "{key}");
+        }
+        for key in [
+            "versionName",
+            "versionCode",
+            "manifestVersionCode",
+            "updateVersionCode",
+        ] {
+            let mut incomplete = current.clone();
+            incomplete["device"].as_object_mut().unwrap().remove(key);
+            assert!(!supported(&incomplete));
+            assert!(validate(&incomplete).is_err());
+        }
+    }
+
+    #[test]
     fn token_and_tag_must_stay_together_without_retaining_tracking_material() {
         let row = b"Row: 0 token=fixture, ts_sign={}, track_data={\"nested\":{\"value\":\"a, b=c\"}}, token_tlb_tag=fixture-tag, is_login=1";
         let snapshot = token_row(row).unwrap().unwrap();
@@ -499,6 +569,13 @@ mod tests {
         assert!(!snapshot.matches_login(&json!({"token":"fixture","tokenTlbTag":"rotated"})));
         assert!(!snapshot.matches_login(&json!({"token":"fixture"})));
         assert!(!snapshot.matches_login(&json!({"token":"rotated","tokenTlbTag":"fixture-tag"})));
+        let row_41_1 = b"Row: 0 token=fixture, ts_sign={}, attest_ts_sign={}, token_encrypted=unused, token_hash=unused, track_data={}, token_tlb_tag=fixture-tag, is_login=1";
+        assert!(
+            token_row(row_41_1)
+                .unwrap()
+                .unwrap()
+                .matches_login(&json!({"token":"fixture","tokenTlbTag":"fixture-tag"}))
+        );
         for track in ["NULL", "null", "{}"] {
             let row = format!(
                 "Row: 0 token=fixture, ts_sign={{}}, track_data={track}, token_tlb_tag=NULL, is_login=1"

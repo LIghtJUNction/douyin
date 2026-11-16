@@ -310,8 +310,24 @@ impl PhoneClient {
         receive_response(&self.output, self.sequence, DEADLINE)
     }
     pub(crate) fn get(&mut self, path: &str, params: &[(String, String)]) -> Result<Value, String> {
+        self.request("GET", path, params, None)
+    }
+
+    pub(crate) fn request(
+        &mut self,
+        method: &str,
+        endpoint: &str,
+        params: &[(String, String)],
+        form: Option<&[(String, String)]>,
+    ) -> Result<Value, String> {
+        if !matches!(method, "GET" | "POST")
+            || (method == "GET" && form.is_some())
+            || (method == "POST" && form.is_none())
+        {
+            return Err("手机通道只接受无正文 GET 或已核对的表单 POST".into());
+        }
         self.sequence = self.sequence.checked_add(1).ok_or("手机通道请求序号溢出")?;
-        self.send(&json!({"id":self.sequence,"path":path,"params":params}))?;
+        self.send(&json!({"id":self.sequence,"method":method,"path":endpoint,"params":params,"form":form}))?;
         self.receive()
             .map_err(|error| format!("手机接口请求失败：{error}"))
     }
@@ -452,13 +468,14 @@ pub fn worker() -> Result<(), String> {
     worker_phase(3)?;
     let session = device.attach(pid).map_err(|_| "无法附加到手机抖音进程")?;
     let source = format!(
-        "{}\nconst Java=bridge;\nglobalThis.douyinReadPaths={};\n{}",
+        "{}\nconst Java=bridge;\nglobalThis.douyinReadPaths={};\nglobalThis.douyinLivePaths={};\n{}",
         include_str!("../assets/phone/java-bridge.js"),
         include_str!("../assets/phone/read-paths.json"),
+        include_str!("../assets/phone/live-paths.json"),
         include_str!("../assets/phone/agent.js")
     );
     let mut options = frida::ScriptOption::new()
-        .set_name("douyin-cli-readonly")
+        .set_name("douyin-cli-phone")
         .set_runtime(frida::ScriptRuntime::QJS);
     worker_phase(4)?;
     let mut script = session
@@ -496,9 +513,15 @@ pub fn worker() -> Result<(), String> {
         let id = request["id"].as_u64().ok_or("手机工作请求缺少序号")?;
         write_result(
             id,
-            script
-                .exports
-                .call("fetch", Some(json!([request["path"], request["params"]]))),
+            script.exports.call(
+                "request",
+                Some(json!([
+                    request["method"],
+                    request["path"],
+                    request["params"],
+                    request["form"]
+                ])),
+            ),
         )?;
     }
     let _ = script.unload();
