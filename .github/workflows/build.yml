@@ -32,10 +32,15 @@ jobs:
 
       - name: Install SQLite (Windows)
         if: runner.os == 'Windows'
+        shell: pwsh
         run: |
-          vcpkg install sqlite3:x64-windows
-          $sqlite = "$env:VCPKG_ROOT\installed\x64-windows"
-          if (-not (Test-Path "$sqlite\lib\sqlite3.lib")) { throw "sqlite3.lib is missing" }
+          $vcpkgExe = (Get-Command vcpkg -CommandType Application -ErrorAction Stop).Source
+          $vcpkgRoot = Split-Path -Parent $vcpkgExe
+          & $vcpkgExe install sqlite3:x64-windows "--vcpkg-root=$vcpkgRoot"
+          if ($LASTEXITCODE -ne 0) { throw "vcpkg install failed with exit code $LASTEXITCODE" }
+          $sqlite = Join-Path $vcpkgRoot "installed\x64-windows"
+          if (-not (Test-Path -LiteralPath "$sqlite\lib\sqlite3.lib" -PathType Leaf)) { throw "sqlite3.lib is missing at $sqlite\lib" }
+          "VCPKG_ROOT=$vcpkgRoot" >> $env:GITHUB_ENV
           "SQLITE3_LIB_DIR=$sqlite\lib" >> $env:GITHUB_ENV
           "SQLITE3_INCLUDE_DIR=$sqlite\include" >> $env:GITHUB_ENV
           "$sqlite\bin" >> $env:GITHUB_PATH
