@@ -60,6 +60,53 @@ jobs:
       - name: Verify CLI
         run: cargo run --locked -- --help
 
+      - name: Package release binary (Unix)
+        if: startsWith(github.ref, 'refs/tags/v') && runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          test -n "$host"
+          mkdir -p dist
+          archive="$GITHUB_WORKSPACE/dist/douyin-$GITHUB_REF_NAME-$host.tar.gz"
+          tar -czf "$archive" -C target/release douyin -C "$GITHUB_WORKSPACE" \
+            LICENSE README.md assets/phone/COPYING assets/phone/COPYING.LIB
+          test -s "$archive"
+          target/release/douyin --version
+
+      - name: Package release binary (Windows)
+        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $hostLine = rustc -vV | Select-String '^host: '
+          if (-not $hostLine) { throw "Rust host triple is missing" }
+          $hostTriple = ($hostLine.ToString() -replace '^host:\s*', '').Trim()
+          if ($hostTriple -notmatch '^[a-z0-9_-]+$') { throw "Rust host triple is invalid" }
+          $staging = Join-Path $env:RUNNER_TEMP "douyin-release"
+          $licenses = Join-Path $staging "assets/phone"
+          New-Item -ItemType Directory -Path $licenses -Force | Out-Null
+          Copy-Item "target/release/douyin.exe" "$staging/douyin.exe" -ErrorAction Stop
+          Copy-Item "LICENSE" "$staging/LICENSE" -ErrorAction Stop
+          Copy-Item "README.md" "$staging/README.md" -ErrorAction Stop
+          Copy-Item "assets/phone/COPYING" "$licenses/COPYING" -ErrorAction Stop
+          Copy-Item "assets/phone/COPYING.LIB" "$licenses/COPYING.LIB" -ErrorAction Stop
+          $sqliteDll = Join-Path $env:VCPKG_ROOT "installed/x64-windows/bin/sqlite3.dll"
+          if (-not (Test-Path -LiteralPath $sqliteDll -PathType Leaf)) { throw "SQLite runtime DLL is missing" }
+          Copy-Item $sqliteDll "$staging/sqlite3.dll" -ErrorAction Stop
+          & "$staging/douyin.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw "Packaged CLI did not start" }
+          New-Item -ItemType Directory -Path "dist" -Force | Out-Null
+          Compress-Archive -Path "$staging/*" -DestinationPath "dist/douyin-$env:GITHUB_REF_NAME-$hostTriple.zip" -Force
+
+      - name: Upload release archive
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-${{ matrix.os }}
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -71,3 +118,48 @@ jobs:
 
       - name: Verify publishable package
         run: cargo package --locked
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, lint]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Verify tag and release archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
+          test "$GITHUB_REF_NAME" = "v$version"
+          shopt -s nullglob
+          archives=(dist/douyin-*.tar.gz dist/douyin-*.zip)
+          if [[ ${#archives[@]} -ne 3 ]]; then
+            echo "Expected Linux, macOS, and Windows release archives" >&2
+            exit 1
+          fi
+          (cd dist && sha256sum douyin-* > SHA256SUMS)
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            notes="docs/releases/$GITHUB_REF_NAME.md"
+            if [[ -f "$notes" ]]; then
+              gh release create "$GITHUB_REF_NAME" dist/* --verify-tag \
+                --title "douyin-cli $GITHUB_REF_NAME" --notes-file "$notes"
+            else
+              gh release create "$GITHUB_REF_NAME" dist/* --verify-tag \
+                --title "douyin-cli $GITHUB_REF_NAME" --generate-notes
+            fi
+          fi
