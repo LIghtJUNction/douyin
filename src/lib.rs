@@ -14,6 +14,7 @@ pub mod im;
 mod im_pb;
 pub mod insights;
 pub mod io;
+mod keva;
 pub mod live;
 pub mod mcp;
 pub mod mcp_http;

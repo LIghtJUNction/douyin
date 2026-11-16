@@ -7,7 +7,7 @@ use reqwest::{blocking::Client, redirect::Policy};
 use rusqlite::Connection;
 use serde_json::{Value, json};
 
-use crate::{adb::Adb, store};
+use crate::{adb::Adb, keva, store};
 
 const DATA: &str = "/data/data/com.ss.android.ugc.aweme/";
 const COOKIE_FILES: &[&str] = &[
@@ -47,7 +47,7 @@ pub fn login_adb(serial: Option<&str>) -> Result<Value, String> {
         device[key] = metadata[key].clone();
     }
     device["identitySources"] = json!({
-        "deviceId": "applog_stats.xml, corroborated by current Keva repository",
+        "deviceId": "applog_stats.xml, corroborated by the active Keva device_id key",
         "appVersions":"PackageManager SS_VERSION_CODE/SS_VERSION_NAME/UPDATE_VERSION_CODE and installed APK version, cross-checked against dumpsys"
     });
     let ua = text(&metadata, "userAgent")?;
@@ -63,22 +63,16 @@ pub fn login_adb(serial: Option<&str>) -> Result<Value, String> {
         )?;
     }
     let prefs = parse_preferences(&read(&adb, "shared_prefs/applog_stats.xml")?)?;
-    let device_id = prefs
-        .get("device_id")
-        .filter(|v| valid_id(v))
-        .ok_or("应用缺少有效 device_id")?;
-    let keva = read(&adb, "files/keva/repo/applog_stats/applog_stats.blk")?;
-    // Newer apps migrate SharedPreferences to Keva. A legacy XML value alone
-    // is insufficient: require corroboration in the current app repository.
-    if !contains_id(&keva, device_id) {
-        return Err("旧设备标识与当前应用记录不一致，拒绝导入".into());
-    }
+    let identity = snapshot_keva_identity(&adb)?;
+    let device_id = corroborated_device_id(&prefs, &identity)?;
     session["device"]["deviceId"] = json!(device_id);
     if crate::native_auth::supported(&session) {
-        let install_id = corroborated_install_id(&prefs, &keva)?;
+        // SharedPreferences can retain an old install_id after migration.
+        // Use the active Keva key, whose value is checked again before saving.
+        let install_id = identity.install_id.as_str();
         session["device"]["installId"] = json!(install_id);
         session["device"]["identitySources"]["installId"] =
-            json!("applog_stats.xml, corroborated by current Keva repository");
+            json!("active Keva install_id key, verified across stable repository snapshots");
         let (login, account) =
             crate::native_auth::import(&adb, &session)?.ok_or("当前版本未提供原生 Token 导入")?;
         session["account"] = account;
@@ -104,12 +98,12 @@ pub fn login_adb(serial: Option<&str>) -> Result<Value, String> {
         let (cookies, cookie_source) = snapshot_cookies(&adb)?;
         session["cookies"] = json!(cookies);
         let install_id = cookie_install_id(&session)?.ok_or("登录态缺少 install_id")?;
-        if !contains_id(&keva, &install_id) {
+        if install_id != identity.install_id {
             return Err("Cookie 的安装标识与当前应用记录不一致，拒绝导入".into());
         }
         session["device"]["installId"] = json!(install_id);
         session["device"]["identitySources"]["installId"] =
-            json!("native-domain Cookie, corroborated by current Keva repository");
+            json!("native-domain Cookie, corroborated by the active Keva install_id key");
         session["nativeCookieSource"] = json!(cookie_source);
         // Passport registration-device metadata must not replace local identity.
         session["account"] = verify(&session)?;
@@ -120,8 +114,8 @@ pub fn login_adb(serial: Option<&str>) -> Result<Value, String> {
         .ok_or("设备记录无效")?
         .remove("authenticated");
     let final_prefs = parse_preferences(&read(&adb, "shared_prefs/applog_stats.xml")?)?;
-    let final_keva = read(&adb, "files/keva/repo/applog_stats/applog_stats.blk")?;
-    validate_import_identity(&session, &final_prefs, &final_keva)?;
+    let final_identity = snapshot_keva_identity(&adb)?;
+    validate_import_identity(&session, &final_prefs, &final_identity)?;
     crate::native_auth::confirm_import(&adb, &session)?;
     store::save(&session)?;
     Ok(summary(&session, true))
@@ -130,13 +124,15 @@ pub fn login_adb(serial: Option<&str>) -> Result<Value, String> {
 fn validate_import_identity(
     session: &Value,
     prefs: &BTreeMap<String, String>,
-    keva: &[u8],
+    identity: &keva::Identity,
 ) -> Result<(), String> {
-    for (field, preference) in [("deviceId", "device_id"), ("installId", "install_id")] {
+    for (field, current) in [
+        ("deviceId", identity.device_id.as_str()),
+        ("installId", identity.install_id.as_str()),
+    ] {
         let expected = text(&session["device"], field)?;
-        let must_match_xml = field == "deviceId" || session.get("nativeAuth").is_some();
-        if !contains_id(keva, expected)
-            || (must_match_xml && prefs.get(preference).map(String::as_str) != Some(expected))
+        if current != expected
+            || (field == "deviceId" && prefs.get("device_id").map(String::as_str) != Some(expected))
         {
             return Err("导入期间应用设备或安装标识已变化，未保存新的登录配置，请重试".into());
         }
@@ -144,16 +140,25 @@ fn validate_import_identity(
     Ok(())
 }
 
-fn corroborated_install_id<'a>(
+fn snapshot_keva_identity(adb: &Adb) -> Result<keva::Identity, String> {
+    keva::snapshot(|| {
+        Ok((
+            read(adb, "files/keva/repo/applog_stats/applog_stats.chk")?,
+            read(adb, "files/keva/repo/applog_stats/applog_stats.blk")?,
+        ))
+    })
+}
+
+fn corroborated_device_id<'a>(
     prefs: &'a BTreeMap<String, String>,
-    keva: &[u8],
+    identity: &keva::Identity,
 ) -> Result<&'a str, String> {
     let id = prefs
-        .get("install_id")
+        .get("device_id")
         .filter(|v| valid_id(v))
-        .ok_or("应用缺少有效 install_id，未导入原生 Token")?;
-    if !contains_id(keva, id) {
-        return Err("应用安装标识与当前 Keva 记录不一致，拒绝导入".into());
+        .ok_or("应用缺少有效 device_id")?;
+    if id != &identity.device_id {
+        return Err("旧设备标识与当前应用记录不一致，拒绝导入".into());
     }
     Ok(id)
 }
@@ -687,24 +692,6 @@ fn package_version(output: &str) -> Result<(String, String), String> {
     Ok((version.to_owned(), code.to_owned()))
 }
 
-fn contains_id(bytes: &[u8], id: &str) -> bool {
-    if !valid_id(id) {
-        return false;
-    }
-    // Keva .blk string payloads have a little-endian tagged length immediately
-    // before their contents. Allocator residue after the declared length may
-    // itself contain digits: checking ASCII boundaries rejects valid IDs, while
-    // unrestricted substring matching accepts prefixes of different IDs.
-    let expected = 0x8100_0000_u32 | id.len() as u32;
-    bytes.windows(id.len()).enumerate().any(|(offset, value)| {
-        value == id.as_bytes()
-            && offset
-                .checked_sub(4)
-                .and_then(|start| bytes.get(start..offset))
-                .is_some_and(|header| header == expected.to_le_bytes())
-    })
-}
-
 fn valid_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 24
@@ -726,37 +713,51 @@ fn now() -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn import_rejects_rotated_xml_identity_even_when_old_keva_values_remain() {
+    fn import_uses_active_install_key_and_rejects_identity_rotation() {
         let session = json!({"device":{"deviceId":"1234","installId":"5678"},"nativeAuth":{}});
         let mut prefs = BTreeMap::from([
             ("device_id".into(), "1234".into()),
-            ("install_id".into(), "5678".into()),
+            ("install_id".into(), "9999".into()),
         ]);
-        let keva = b"\x04\x00\x00\x811234\x04\x00\x00\x815678\x04\x00\x00\x819999";
-        assert!(validate_import_identity(&session, &prefs, keva).is_ok());
-        for key in ["device_id", "install_id"] {
-            let previous = prefs.insert(key.into(), "9999".into()).unwrap();
-            assert!(validate_import_identity(&session, &prefs, keva).is_err());
-            prefs.insert(key.into(), previous);
+        let identity = keva::Identity {
+            device_id: "1234".into(),
+            install_id: "5678".into(),
+        };
+        // XML install_id can be stale or absent; device_id still must agree.
+        assert!(validate_import_identity(&session, &prefs, &identity).is_ok());
+        prefs.remove("install_id");
+        assert!(validate_import_identity(&session, &prefs, &identity).is_ok());
+        for changed in [
+            keva::Identity {
+                device_id: "9999".into(),
+                ..identity.clone()
+            },
+            keva::Identity {
+                install_id: "9999".into(),
+                ..identity.clone()
+            },
+        ] {
+            assert!(validate_import_identity(&session, &prefs, &changed).is_err());
         }
-        assert!(validate_import_identity(&session, &prefs, b"").is_err());
+        prefs.insert("device_id".into(), "9999".into());
+        assert!(validate_import_identity(&session, &prefs, &identity).is_err());
+        prefs.remove("device_id");
+        assert!(validate_import_identity(&session, &prefs, &identity).is_err());
     }
     #[test]
-    fn native_install_id_requires_current_app_corroboration_without_cookie() {
-        let prefs = std::collections::BTreeMap::from([("install_id".into(), "1234".into())]);
-        assert_eq!(
-            super::corroborated_install_id(&prefs, b"\x04\x00\x00\x811234").unwrap(),
-            "1234"
-        );
-        assert!(super::corroborated_install_id(&prefs, b"\x04\x00\x00\x815678").is_err());
-        assert!(super::corroborated_install_id(&prefs, b"\x08\x00\x00\x8112345678").is_err());
-        assert!(
-            super::corroborated_install_id(
-                &std::collections::BTreeMap::new(),
-                b"\x04\x00\x00\x811234"
-            )
-            .is_err()
-        );
+    fn xml_device_id_requires_the_same_active_keva_key() {
+        let identity = keva::Identity {
+            device_id: "1234".into(),
+            install_id: "5678".into(),
+        };
+        let prefs = BTreeMap::from([("device_id".into(), "1234".into())]);
+        assert_eq!(corroborated_device_id(&prefs, &identity).unwrap(), "1234");
+        let swapped = keva::Identity {
+            device_id: "5678".into(),
+            install_id: "1234".into(),
+        };
+        assert!(corroborated_device_id(&prefs, &swapped).is_err());
+        assert!(corroborated_device_id(&BTreeMap::new(), &identity).is_err());
     }
     use super::*;
     #[test]
@@ -1021,10 +1022,13 @@ mod tests {
     }
     #[test]
     fn corroboration_does_not_accept_substrings_of_other_ids() {
-        assert!(!contains_id(b"012345", "1234"));
-        assert!(contains_id(b"\x04\x00\x00\x8112345678", "1234"));
-        assert!(!contains_id(b"\x08\x00\x00\x8112345678", "1234"));
-        assert!(!contains_id(b"\x04\x00\x00\x011234", "1234"));
-        assert!(!contains_id(b"", ""));
+        let identity = keva::Identity {
+            device_id: "12345678".into(),
+            install_id: "1234".into(),
+        };
+        for value in ["1234", "", "0000", "123456789"] {
+            let prefs = BTreeMap::from([("device_id".into(), value.into())]);
+            assert!(corroborated_device_id(&prefs, &identity).is_err());
+        }
     }
 }
