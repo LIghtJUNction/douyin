@@ -397,6 +397,26 @@ douyin api request GET /oauth/userinfo/ --param open_id="OPEN_ID"
 
 通用请求拒绝跨域地址、重定向和敏感请求头覆盖。写操作需要 `--yes` 或交互确认。真实可用范围取决于开放平台应用的审核、scope、账号权限和接口配额。
 
+## 投稿
+
+投稿使用官方 OAuth 内容发布能力，不复用 Android 原生登录态。当前支持本地视频上传、标题、可见范围和时间点封面：
+
+```bash
+# 先完成包含 video.create / video.create.bind 的 OAuth 授权
+douyin auth login --scope user_info,video.create
+
+# 上传并创建公开作品；写操作必须显式确认
+douyin publish video ./video.mp4 --title "标题 #话题" --yes
+
+# 仅自己可见
+douyin publish video ./video.mp4 --visibility private --yes
+
+# 从第 2.3 秒截取封面
+douyin publish video ./video.mp4 --cover-tsp 2.3 --yes
+```
+
+投稿会先上传文件取得加密 `video_id`，再调用创建视频接口取得 `item_id`。命令不会打印 access token；真实发布仍受开放平台 scope、审核、账号权限、视频时长/大小和平台内容审核限制约束。
+
 ## MCP：接入 AI 与自动化工具
 
 启动 stdio MCP：

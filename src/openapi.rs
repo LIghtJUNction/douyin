@@ -5,7 +5,10 @@ use std::time::Duration;
 
 use reqwest::{
     Method,
-    blocking::Client,
+    blocking::{
+        Client,
+        multipart::{Form, Part},
+    },
     header::{HeaderName, HeaderValue},
     redirect::Policy,
 };
@@ -158,6 +161,47 @@ impl OpenApiClient {
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
         self.request(request)
+    }
+
+    pub fn upload_video(
+        &self,
+        token: &str,
+        open_id: &str,
+        file: &std::path::Path,
+    ) -> Result<Value, String> {
+        let url = self.url("/api/douyin/v1/video/upload_video/")?;
+        let part = Part::file(file)
+            .map_err(|_| "无法打开投稿视频文件")?
+            .file_name(
+                file.file_name()
+                    .and_then(|v| v.to_str())
+                    .unwrap_or("video.mp4")
+                    .to_owned(),
+            );
+        let form = Form::new().part("video", part);
+        let response = self
+            .client
+            .post(url)
+            .query(&[("open_id", open_id)])
+            .header("access-token", token)
+            .multipart(form)
+            .send()
+            .map_err(|_| "投稿视频上传失败或超时")?;
+        if !response.status().is_success() {
+            return Err(format!("OpenAPI 返回 HTTP {}", response.status().as_u16()));
+        }
+        let mut bytes = Vec::new();
+        response
+            .take(16 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "读取投稿上传响应失败")?;
+        if bytes.len() > 16 * 1024 * 1024 {
+            return Err("投稿上传响应超过大小限制".into());
+        }
+        let value: Value =
+            serde_json::from_slice(&bytes).map_err(|_| "投稿上传返回非 JSON 内容")?;
+        validate_response(&value)?;
+        Ok(value)
     }
 }
 

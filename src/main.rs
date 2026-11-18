@@ -26,6 +26,8 @@ enum Command {
     Mcp(douyin_cli::mcp_http::McpArgs),
     /// 调用官方 OpenAPI，需要开放平台应用授权
     Api(douyin_cli::api::ApiArgs),
+    /// 使用官方 OAuth 上传并发布视频
+    Publish(douyin_cli::publish::PublishArgs),
     /// 下载抖音 CDN 媒体 URL，不向媒体主机发送登录凭据
     Download {
         url: String,
@@ -119,6 +121,7 @@ fn run() -> Result<(), String> {
         Command::Im(args) => douyin_cli::im::run(args)?,
         Command::Mcp(args) => douyin_cli::mcp_http::run(args)?,
         Command::Api(args) => douyin_cli::api::run(args)?,
+        Command::Publish(args) => douyin_cli::publish::run(args)?,
         Command::Download { url, output } => douyin_cli::download::url(&url, &output)?,
         Command::Me => {
             let value = douyin_cli::net::NativeClient::saved()?.me()?;
