@@ -590,7 +590,7 @@ dependencies = [
 
 [[package]]
 name = "douyin-cli"
-version = "2026.11.17"
+version = "2026.11.18"
 dependencies = [
  "axum",
  "base64 0.23.1",
