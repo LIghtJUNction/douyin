@@ -289,23 +289,26 @@ fn apply_token_response(saved: &mut Value, response: &Value, fresh: bool) -> Res
 
 pub fn status(offline: bool) -> Result<Value, String> {
     let saved = load()?;
-    let mut result = summary(&saved, false);
+    let result = summary(&saved, false);
     if offline || result["authorized"] != true {
         return Ok(result);
     }
+    online_status(&OpenApiClient::new()?, &saved)
+}
+
+fn online_status(client: &OpenApiClient, saved: &Value) -> Result<Value, String> {
     let mut request = Request::new(Method::GET, "/oauth/userinfo/");
-    request.token = Some(required(&saved, "accessToken")?);
+    request.token = Some(required(saved, "accessToken")?);
     request
         .params
-        .push(("open_id".into(), required(&saved, "openId")?.into()));
-    let response = OpenApiClient::new()?.request(request)?;
-    if let Some(id) = response["data"]["open_id"].as_str()
-        && Some(id) != field(&saved, "openId")
-    {
+        .push(("open_id".into(), required(saved, "openId")?.into()));
+    let response = client.request(request)?;
+    let id = field(&response["data"], "open_id")
+        .ok_or("官方接口未返回有效 open_id，登录状态核实失败")?;
+    if Some(id) != field(saved, "openId") {
         return Err("官方接口账号与保存的 open_id 不一致".into());
     }
-    result["connected"] = json!(true);
-    Ok(result)
+    Ok(summary(saved, true))
 }
 
 pub fn logout() -> Result<(), String> {
@@ -447,6 +450,76 @@ fn wait_callback(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn status_response(response: Value) -> Result<Value, String> {
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let base = Url::parse(&format!("http://{}/", server.server_addr())).unwrap();
+        let handler = std::thread::spawn(move || {
+            let request = server
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .expect("account verification request");
+            assert_eq!(request.method(), &tiny_http::Method::Get);
+            let url = Url::parse(&format!("http://localhost{}", request.url())).unwrap();
+            assert_eq!(url.path(), "/oauth/userinfo/");
+            assert_eq!(
+                url.query_pairs().into_owned().collect::<Vec<_>>(),
+                [("open_id".to_owned(), "account+1/=?".to_owned())]
+            );
+            assert!(
+                request
+                    .headers()
+                    .iter()
+                    .any(|h| h.field.equiv("access-token")
+                        && h.value.as_str() == "private-test-token")
+            );
+            assert!(
+                !request
+                    .headers()
+                    .iter()
+                    .any(|h| h.field.equiv("Cookie") || h.field.equiv("Authorization"))
+            );
+            request
+                .respond(Response::from_string(response.to_string()))
+                .unwrap();
+        });
+        let saved = json!({"accessToken":"private-test-token", "refreshToken":"private-refresh-token", "openId":"account+1/=?"});
+        let result = online_status(&OpenApiClient::with_base(base).unwrap(), &saved);
+        handler.join().unwrap();
+        result
+    }
+
+    #[test]
+    fn online_status_requires_nonempty_matching_account() {
+        let value =
+            status_response(json!({"data":{"error_code":0,"open_id":"account+1/=?"}})).unwrap();
+        assert_eq!(value["connected"], true);
+        assert_eq!(value["authorized"], true);
+        assert!(!value.to_string().contains("private-"));
+        for response in [
+            json!({"data":{"error_code":0}}),
+            json!({"data":{"error_code":0,"open_id":null}}),
+            json!({"data":{"error_code":0,"open_id":" "}}),
+            json!({"data":{"error_code":0,"open_id":123}}),
+        ] {
+            let error = status_response(response).unwrap_err();
+            assert!(error.contains("未返回有效 open_id"), "{error}");
+            assert!(!error.contains("private-"));
+        }
+        let error = status_response(json!({"data":{"error_code":0,"open_id":"other-account"}}))
+            .unwrap_err();
+        assert!(error.contains("不一致"), "{error}");
+        assert!(!error.contains("other-account"));
+    }
+
+    #[test]
+    fn online_status_rejects_api_errors_even_with_matching_identity() {
+        let error = status_response(json!({})).unwrap_err();
+        assert!(error.contains("未返回可识别的业务状态"), "{error}");
+        let error = status_response(json!({"data":{"error_code":2100005,"open_id":"account+1/=?","description":"Parameter error"}})).unwrap_err();
+        assert!(!error.contains("private-"));
+        assert!(error.contains("2100005"), "{error}");
+    }
+
     #[test]
     fn callback_rejects_missing_duplicate_and_wrong_state() {
         assert_eq!(

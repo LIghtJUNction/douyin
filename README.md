@@ -167,7 +167,7 @@ douyin api userinfo
 douyin auth code --code "授权回调中的 code"
 ```
 
-原生登录、网页 Cookie 和官方 OAuth 分别保存；OpenAPI 使用 OAuth，不使用 ADB 导入的 Token 代替。
+原生登录、网页 Cookie 和官方 OAuth 分别保存；OpenAPI 使用 OAuth，不使用 ADB 导入的 Token 代替。 `auth status --oauth` 只有在官方响应返回非空且匹配的账号 ID 后才确认连接；`--offline` 只展示本地授权记录。
 
 ### 2. 采集公开内容
 
@@ -371,7 +371,9 @@ douyin -u "作品 ID 或分享链接" -t aweme -l 1 -p ./downloads
 douyin download "https://抖音CDN域名/媒体路径" -o ./media.mp4
 ```
 
-下载器会校验 HTTPS CDN 主机和重定向，先写临时文件再提交；已有非空文件会跳过。登录 Token、Cookie 和 OAuth 凭据不会转发给 CDN。
+下载器会校验 HTTPS CDN 主机和每次重定向，按顺序尝试最多 8 个去重后的候选地址。文件完整读取并通过状态、类型和长度检查后才提交；已有非空普通文件直接复用，零字节文件会在下载成功后原子替换，目录和特殊文件会报错。中断或全部候选失败时保留原有文件。
+
+登录 Token、Cookie 和 OAuth 凭据不会转发给 CDN。最终错误只显示尝试次数与原因，不回显带签名的媒体 URL。
 
 ## 官方 OpenAPI
 

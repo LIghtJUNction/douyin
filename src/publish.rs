@@ -123,6 +123,13 @@ struct Journal {
     _lock: File,
 }
 
+impl Drop for Journal {
+    fn drop(&mut self) {
+        // Release now even if a concurrent process launch inherited a descriptor.
+        let _ = self._lock.unlock();
+    }
+}
+
 pub fn run(args: PublishArgs) -> Result<(), String> {
     let result = match args.command {
         PublishCommand::Video(args) => publish_video(args)?,
@@ -477,7 +484,7 @@ fn summary(receipt: &Receipt, path: &Path) -> Value {
         "video_id": receipt.video_id,
         "item_id": receipt.item_id,
         "visibility": receipt.options.visibility,
-        "review_status": if receipt.stage == Stage::Submitted { Some("pending") } else { None },
+        "review_status": if receipt.stage == Stage::Submitted { Some("not_queried") } else { None },
         "requires_verification": matches!(receipt.stage, Stage::Creating | Stage::Unknown),
     })
 }
@@ -582,6 +589,22 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn receipt_drop_releases_lock_while_a_duplicate_descriptor_is_still_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("receipt.json");
+        let journal = Journal::create(Some(&path), &uploaded()).unwrap();
+        // A concurrent process launch may temporarily inherit this description.
+        let duplicate = journal._lock.try_clone().unwrap();
+        assert!(Journal::open(&path).is_err());
+        drop(journal);
+        let next = Journal::open(&path).unwrap();
+        assert!(Journal::open(&path).is_err());
+        drop(next);
+        drop(duplicate);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn receipt_aliases_share_the_same_lock_and_update_the_original_record() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("receipt.json");
@@ -612,7 +635,7 @@ mod tests {
     }
 
     #[test]
-    fn create_failure_keeps_video_for_recovery_and_success_records_pending_review() {
+    fn create_failure_keeps_video_for_recovery_and_success_leaves_review_unqueried() {
         for success in [false, true] {
             let server = TcpListener::bind("127.0.0.1:0").unwrap();
             let client = OpenApiClient::with_base(
@@ -676,7 +699,7 @@ mod tests {
             assert_eq!(receipt.video_id.as_deref(), Some("encrypted-video"));
             if success {
                 assert_eq!(receipt.stage, Stage::Submitted);
-                assert_eq!(result.unwrap()["review_status"], "pending");
+                assert_eq!(result.unwrap()["review_status"], "not_queried");
             } else {
                 assert_eq!(receipt.stage, Stage::Unknown);
                 let error = result.unwrap_err();
