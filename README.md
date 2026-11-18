@@ -396,7 +396,7 @@ douyin api im-message-send --help
 douyin api request GET /oauth/userinfo/ --param open_id="OPEN_ID"
 ```
 
-通用请求拒绝跨域地址、重定向和敏感请求头覆盖。写操作需要 `--yes` 或交互确认。真实可用范围取决于开放平台应用的审核、scope、账号权限和接口配��。
+通用请求拒绝跨域地址、重定向和敏感请求头覆盖。写操作需要 `--yes` 或交互确认。真实可用范围取决于开放平台应用的审核、scope、账号权限和接口配额。
 
 ## 投稿
 
