@@ -127,7 +127,7 @@ pub fn login(args: LoginArgs) -> Result<Value, String> {
         });
     saved["clientKey"] = json!(key);
     saved["redirectUri"] = json!(redirect);
-    saved["scopes"] = json!(scopes);
+    saved["requestedScopes"] = json!(scopes);
     if let Some(secret) = secret {
         saved["clientSecret"] = json!(secret);
     }
@@ -219,6 +219,9 @@ pub fn refresh() -> Result<Value, String> {
 }
 
 fn apply_token_response(saved: &mut Value, response: &Value, fresh: bool) -> Result<(), String> {
+    if !saved.is_object() {
+        return Err("OAuth 配置无效".into());
+    }
     let data = &response["data"];
     if field(data, "access_token").is_none()
         || (field(data, "open_id").is_none() && (fresh || field(saved, "openId").is_none()))
@@ -231,6 +234,34 @@ fn apply_token_response(saved: &mut Value, response: &Value, fresh: bool) -> Res
     {
         return Err("刷新返回了其他账号的 token，未更新配置".into());
     }
+    let expires = data
+        .get("expires_in")
+        .map(|value| {
+            value
+                .as_u64()
+                .or_else(|| value.as_str()?.parse().ok())
+                .ok_or("OAuth 响应的 expires_in 无效，未更新配置")
+        })
+        .transpose()?;
+    let scopes = data
+        .get("scope")
+        .map(|value| {
+            value
+                .as_str()
+                .map(|value| {
+                    value
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .collect::<Vec<_>>()
+                })
+                .ok_or("OAuth 响应的 scope 无效，未更新配置")
+        })
+        .transpose()?;
+    let updated_at = now()?;
+    if fresh {
+        clear_tokens(saved);
+    }
     for (remote, local) in [
         ("access_token", "accessToken"),
         ("refresh_token", "refreshToken"),
@@ -240,23 +271,15 @@ fn apply_token_response(saved: &mut Value, response: &Value, fresh: bool) -> Res
             saved[local] = json!(value);
         }
     }
-    if let Some(expires) = data["expires_in"]
-        .as_u64()
-        .or_else(|| data["expires_in"].as_str()?.parse().ok())
-    {
+    if let Some(expires) = expires {
         saved["expiresIn"] = json!(expires);
-        saved["expiresAt"] = json!(now()?.saturating_add(expires));
+        saved["expiresAt"] = json!(updated_at.saturating_add(expires));
     }
-    if let Some(scopes) = field(data, "scope") {
-        saved["scopes"] = json!(
-            scopes
-                .split(',')
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-                .collect::<Vec<_>>()
-        );
+    if let Some(scopes) = scopes {
+        saved["scopes"] = json!(scopes);
+        saved["scopesVerified"] = json!(true);
     }
-    saved["updatedAt"] = json!(now()?);
+    saved["updatedAt"] = json!(updated_at);
     saved
         .as_object_mut()
         .ok_or("OAuth 配置无效")?
@@ -311,15 +334,27 @@ fn clear_tokens(saved: &mut Value) {
             "expiresAt",
             "updatedAt",
             "pending",
+            "scopes",
+            "scopesVerified",
         ] {
             map.remove(key);
         }
     }
 }
 fn summary(saved: &Value, connected: bool) -> Value {
-    json!({"source":"oauth","authorized":field(saved,"accessToken").is_some() && field(saved,"openId").is_some(),
-    "connected":connected,"openId":saved["openId"],"scopes":saved["scopes"],"expiresAt":saved["expiresAt"]})
+    let scopes_verified = saved["scopesVerified"] == true;
+    json!({
+        "source": "oauth",
+        "authorized": field(saved, "accessToken").is_some() && field(saved, "openId").is_some(),
+        "connected": connected,
+        "openId": saved["openId"],
+        "requestedScopes": saved["requestedScopes"],
+        "scopes": if scopes_verified { saved["scopes"].clone() } else { Value::Null },
+        "scopesVerified": scopes_verified,
+        "expiresAt": saved["expiresAt"],
+    })
 }
+
 fn random_state() -> Result<String, String> {
     let mut bytes = [0u8; 32];
     SystemRandom::new()
@@ -459,6 +494,139 @@ mod tests {
         assert!(!status.to_string().contains("refreshToken"));
         assert!(!status.to_string().contains("accessToken"));
     }
+    #[test]
+    fn fresh_authorization_drops_previous_accounts_optional_token_fields() {
+        let mut saved = json!({
+            "clientKey": "key",
+            "clientSecret": "keep-client-secret",
+            "accessToken": "old-access",
+            "refreshToken": "old-refresh",
+            "openId": "old-account",
+            "expiresIn": 3600,
+            "expiresAt": 999,
+            "scopes": ["user_info", "video.create.bind"],
+            "scopesVerified": true,
+            "requestedScopes": ["user_info"],
+            "pending": {"state": "old-pending"},
+        });
+        apply_token_response(
+            &mut saved,
+            &json!({"data": {"access_token": "new-access", "open_id": "new-account"}}),
+            true,
+        )
+        .unwrap();
+        assert_eq!(saved["accessToken"], "new-access");
+        assert_eq!(saved["openId"], "new-account");
+        assert_eq!(saved["clientSecret"], "keep-client-secret");
+        assert_eq!(saved["requestedScopes"], json!(["user_info"]));
+        for key in [
+            "refreshToken",
+            "expiresIn",
+            "expiresAt",
+            "scopes",
+            "scopesVerified",
+            "pending",
+        ] {
+            assert!(saved.get(key).is_none(), "{key}");
+        }
+        assert_eq!(summary(&saved, false)["scopesVerified"], false);
+    }
+
+    #[test]
+    fn invalid_token_responses_preserve_all_previous_state() {
+        let before = json!({
+            "accessToken": "old",
+            "refreshToken": "keep",
+            "openId": "account",
+            "scopes": ["user_info"],
+            "scopesVerified": true,
+            "requestedScopes": ["video.create.bind"],
+            "expiresAt": 999,
+        });
+        for response in [
+            json!({"data": {}}),
+            json!({"data": {"access_token": "new"}}),
+            json!({"data": {"access_token": "new", "open_id": "other", "expires_in": -1}}),
+            json!({"data": {"access_token": "new", "open_id": "other", "expires_in": "invalid"}}),
+            json!({"data": {"access_token": "new", "open_id": "other", "scope": ["user_info"]}}),
+        ] {
+            let mut saved = before.clone();
+            assert!(apply_token_response(&mut saved, &response, true).is_err());
+            assert_eq!(saved, before);
+        }
+        let mut saved = before.clone();
+        assert!(
+            apply_token_response(
+                &mut saved,
+                &json!({"data": {"access_token": "new", "open_id": "other"}}),
+                false,
+            )
+            .is_err()
+        );
+        assert_eq!(saved, before);
+    }
+
+    #[test]
+    fn refresh_preserves_verified_scopes_when_omitted_and_records_reduced_grants() {
+        let mut saved = json!({
+            "accessToken": "old",
+            "refreshToken": "keep",
+            "openId": "account",
+            "scopes": ["user_info", "video.create.bind"],
+            "scopesVerified": true,
+            "requestedScopes": ["user_info", "video.create.bind"],
+        });
+        apply_token_response(&mut saved, &json!({"data": {"access_token": "new"}}), false).unwrap();
+        assert_eq!(saved["refreshToken"], "keep");
+        assert_eq!(saved["scopes"], json!(["user_info", "video.create.bind"]));
+        assert_eq!(saved["scopesVerified"], true);
+
+        apply_token_response(
+            &mut saved,
+            &json!({"data": {"access_token": "newer", "scope": " user_info "}}),
+            false,
+        )
+        .unwrap();
+        assert_eq!(saved["scopes"], json!(["user_info"]));
+        assert_eq!(
+            saved["requestedScopes"],
+            json!(["user_info", "video.create.bind"])
+        );
+
+        apply_token_response(
+            &mut saved,
+            &json!({"data": {"access_token": "latest", "scope": ""}}),
+            false,
+        )
+        .unwrap();
+        assert_eq!(saved["scopes"], json!([]));
+        assert_eq!(saved["scopesVerified"], true);
+    }
+
+    #[test]
+    fn refresh_does_not_promote_legacy_scopes_without_server_evidence() {
+        let mut saved = json!({
+            "accessToken": "old",
+            "refreshToken": "keep",
+            "openId": "account",
+            "scopes": ["video.create.bind"],
+        });
+        apply_token_response(&mut saved, &json!({"data": {"access_token": "new"}}), false).unwrap();
+        let status = summary(&saved, false);
+        assert_eq!(status["scopesVerified"], false);
+        assert!(status["scopes"].is_null());
+
+        apply_token_response(
+            &mut saved,
+            &json!({"data": {"access_token": "newer", "scope": "user_info,video.create.bind"}}),
+            false,
+        )
+        .unwrap();
+        let status = summary(&saved, false);
+        assert_eq!(status["scopesVerified"], true);
+        assert_eq!(status["scopes"], json!(["user_info", "video.create.bind"]));
+    }
+
     #[test]
     fn loopback_listener_survives_unrelated_and_invalid_requests() {
         let server = Server::http("127.0.0.1:0").unwrap();

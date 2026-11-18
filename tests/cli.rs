@@ -196,7 +196,10 @@ fn manual_oauth_setup_is_isolated_and_does_not_print_secrets() {
     let saved: Value =
         serde_json::from_slice(&std::fs::read(home.path().join("oauth.json")).unwrap()).unwrap();
     assert_eq!(saved["clientKey"], "fixture-key");
-    assert_eq!(saved["scopes"], json!(["user_info", "item.comment"]));
+    assert_eq!(
+        saved["requestedScopes"],
+        json!(["user_info", "item.comment"])
+    );
     assert!(
         saved["pending"]["state"]
             .as_str()
