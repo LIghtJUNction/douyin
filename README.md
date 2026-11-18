@@ -9,7 +9,7 @@
 
 - 项目地址：https://github.com/LIghtJUNction/douyin
 - 安装包：https://crates.io/crates/douyin-cli
-- 源码版本：`2026.11.17`
+- 源码版本：`2026.11.18`
 - 开发记录：[docs/rebuild.md](docs/rebuild.md)
 
 > 本项目并非抖音官方产品，与抖音及字节跳动无任何隶属关系。请仅操作自己的账号和已获授权的数据，并遵守相关法律、平台规则和内容版权要求。接口与风控策略可能随时变化，命令存在并不代表所有线上场景都已验收，具体边界见下文。
@@ -36,6 +36,7 @@
 | 原生私信 | 会话创建、票据、消息拉取、文本发送 | 文本发送已实际跑通；其他 IM 流程仍需逐项验收 |
 | 媒体下载 | 视频、图集、封面、标题、直接 CDN URL | 真实 MP4 下载已验收，不向 CDN 发送登录凭据 |
 | OpenAPI | OAuth、资料、评论、官方私信、同源请求 | 本地协议与安全测试通过；依赖真实开放平台应用和权限 |
+| 投稿 | 流式分片上传、预检、仅上传与进度恢复 | 本地 HTTP/CLI 回归通过；真实 OpenAPI 投稿需应用权限及 OAuth |
 | MCP | stdio、回环 Streamable HTTP、事件 Webhook | 真实进程端到端测试通过，含原生只读工具 |
 | 直播 | 权限、预览、创建、续播、私密会话、心跳和结束状态 | 41.1.0 权限/预览查询通过；预检返回 10001，真实开播尚未验收 |
 | OBS | 推流配置、媒体源、状态和停止 | 已有本地联动验收；本轮 OBS 未连接，真实抖音推拉流尚未验收 |
@@ -166,7 +167,7 @@ douyin api userinfo
 douyin auth code --code "授权回调中的 code"
 ```
 
-原生登录、网页 Cookie 和官方 OAuth 分别保存；OpenAPI 使用 OAuth，不使用 ADB 导入的 Token 代替。
+原生登录、网页 Cookie 和官方 OAuth 分别保存；OpenAPI 使用 OAuth，不使用 ADB 导入的 Token 代替。 `auth status --oauth` 只有在官方响应返回非空且匹配的账号 ID 后才确认连接；`--offline` 只展示本地授权记录。
 
 ### 2. 采集公开内容
 
@@ -370,7 +371,9 @@ douyin -u "作品 ID 或分享链接" -t aweme -l 1 -p ./downloads
 douyin download "https://抖音CDN域名/媒体路径" -o ./media.mp4
 ```
 
-下载器会校验 HTTPS CDN 主机和重定向，先写临时文件再提交；已有非空文件会跳过。登录 Token、Cookie 和 OAuth 凭据不会转发给 CDN。
+下载器会校验 HTTPS CDN 主机和每次重定向，按顺序尝试最多 8 个去重后的候选地址。文件完整读取并通过状态、类型和长度检查后才提交；已有非空普通文件直接复用，零字节文件会在下载成功后原子替换，目录和特殊文件会报错。中断或全部候选失败时保留原有文件。
+
+登录 Token、Cookie 和 OAuth 凭据不会转发给 CDN。最终错误只显示尝试次数与原因，不回显带签名的媒体 URL。
 
 ## 官方 OpenAPI
 
@@ -399,23 +402,24 @@ douyin api request GET /oauth/userinfo/ --param open_id="OPEN_ID"
 
 ## 投稿
 
-投稿使用官方 OAuth 内容发布能力，不复用 Android 原生登录态。当前支持本地视频上传、标题、可见范围和时间点封面：
+投稿使用官方 OAuth 内容发布能力，需要用户实际授予 `video.create.bind`。支持自动流式分片、独立上传超时、本地预检和投稿记录恢复：
 
 ```bash
-# 先完成包含 video.create / video.create.bind 的 OAuth 授权
-douyin auth login --scope user_info,video.create
+douyin auth login --scope user_info,video.create.bind
 
-# 上传并创建公开作品；写操作必须显式确认
+# 本地检查文件和权限，不上传、不创建作品
+douyin publish video ./video.mp4 --title "标题 #话题" --dry-run
+
+# 上传并创建作品，自动保存进度
 douyin publish video ./video.mp4 --title "标题 #话题" --yes
 
-# 仅自己可见
-douyin publish video ./video.mp4 --visibility private --yes
-
-# 从第 2.3 秒截取封面
-douyin publish video ./video.mp4 --cover-tsp 2.3 --yes
+# 先上传，再复用已上传的视频创建作品
+douyin publish video ./video.mp4 --upload-only --receipt ./video-receipt.json --yes
+douyin publish status ./video-receipt.json
+douyin publish resume ./video-receipt.json --yes
 ```
 
-投稿会先上传文件取得加密 `video_id`，再调用创建视频接口取得 `item_id`。命令不会打印 access token；真实发布仍受开放平台 scope、审核、账号权限、视频时长/大小和平台内容审核限制约束。
+超过 50 MiB 自动分片，每个上传请求默认超时 300 秒，可用 `--upload-timeout` 修改。支持 `--visibility private|friends|public` 和 `--cover-tsp 2.3`。创建结果未知时先检查创作者中心，再决定是否显式重试；成功创建后进入平台审核。完整命令、恢复阶段和验证范围见 [视频投稿](docs/publishing.md)。
 
 ## MCP：接入 AI 与自动化工具
 
