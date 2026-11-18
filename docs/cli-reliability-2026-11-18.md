@@ -4,9 +4,9 @@
 
 ## 交付状态
 
-本轮在官方视频投稿实现上继续迭代，修复下载恢复、CDN 地址回退、OAuth 在线状态和投稿记录锁。源码已分阶段推送到 `iteration/cli-reliability-20261118`，本地共 215 项测试通过，0 失败，1 项原有手机依赖测试保持忽略。
+本轮在官方视频投稿实现上继续迭代，修复下载恢复、CDN 地址回退、OAuth 在线状态和投稿记录锁。源码已分阶段提交并整合到 `main`，本地共 215 项测试通过，0 失败，1 项原有手机依赖测试保持忽略。
 
-[PR #7：修复下载恢复、CDN 回退与账号/投稿状态核实](https://github.com/LIghtJUNction/douyin/pull/7) 以 [PR #6 的投稿分支](https://github.com/LIghtJUNction/douyin/pull/6) 为基底，当前保持打开。包版本为 `2026.11.18`；本轮没有创建新的发布标签或 crates.io 版本。
+[PR #7：修复下载恢复、CDN 回退与账号/投稿状态核实](https://github.com/LIghtJUNction/douyin/pull/7) 和 [PR #6：官方视频投稿](https://github.com/LIghtJUNction/douyin/pull/6) 均已合并；主线集成提交为 [8afc09e](https://github.com/LIghtJUNction/douyin/commit/8afc09edeb23d41c85283181e4988b0d9614327d)。包版本为 `2026.11.18`；本轮没有创建新的发布标签或 crates.io 版本。
 
 开发机已通过 `cargo install --path . --locked --offline --force` 更新 `/home/lightjunction/.cargo/bin/douyin`。实际可执行文件返回 `douyin-cli 2026.11.18`；发布命令帮助、隔离的已提交记录查询和恢复检查均通过，输出 `review_status: not_queried` 且记录内容保持。
 
@@ -83,6 +83,6 @@ HTTP 回归使用本地服务器和隔离目录，覆盖实际请求、响应和
 - [19e83d5：恢复空文件并支持有界 CDN 回退](https://github.com/LIghtJUNction/douyin/commit/19e83d5405d96124057329fe63748e4221f6993a)
 - [f456b59：主动释放投稿记录锁](https://github.com/LIghtJUNction/douyin/commit/f456b598af207512559a9712e3b029754d69df55)
 
-开发机工作树：`/home/lightjunction/Documents/GITHUB/douyin/.worktrees/cli-reliability-20261118`。
+开发机主工作区：`/home/lightjunction/Documents/GITHUB/douyin`，分支 `main`。
 
 交付目录：[douyin-cli-投稿迭代-2026-11-18](https://drive.google.com/drive/folders/1RJQudADJhrQsZsQ90qM2-XET6Q2b6Opa)。
