@@ -477,7 +477,7 @@ fn summary(receipt: &Receipt, path: &Path) -> Value {
         "video_id": receipt.video_id,
         "item_id": receipt.item_id,
         "visibility": receipt.options.visibility,
-        "review_status": if receipt.stage == Stage::Submitted { Some("pending") } else { None },
+        "review_status": if receipt.stage == Stage::Submitted { Some("not_queried") } else { None },
         "requires_verification": matches!(receipt.stage, Stage::Creating | Stage::Unknown),
     })
 }

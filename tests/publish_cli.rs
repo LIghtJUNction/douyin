@@ -136,6 +136,8 @@ fn submitted_receipts_are_readable_and_resume_never_reposts() {
         let value: Value = serde_json::from_slice(&out.stdout).unwrap();
         assert_eq!(value["stage"], "submitted");
         assert_eq!(value["item_id"], "created-item");
+        assert_eq!(value["review_status"], "not_queried");
+        assert_eq!(value["requires_verification"], false);
     }
     assert_eq!(
         serde_json::from_slice::<Value>(&std::fs::read(&path).unwrap()).unwrap(),

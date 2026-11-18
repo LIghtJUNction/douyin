@@ -66,7 +66,7 @@ douyin publish resume ./video-receipt.json --yes
 douyin publish resume ./video-receipt.json --retry-create --yes
 ```
 
-成功输出包含 `item_id`、`video_id`、记录路径及 `review_status: "pending"`。作品创建后进入平台审核，实际可见状态以创作者中心为准。
+成功输出包含 `item_id`、`video_id`、记录路径及 `review_status: "not_queried"`。`stage: "submitted"` 表示创建接口已返回作品 ID；本地记录未查询服务端审核结果，实际审核及可见状态以创作者中心为准。
 
 ## 验证范围
 
