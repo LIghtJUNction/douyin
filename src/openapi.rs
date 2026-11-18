@@ -1,6 +1,7 @@
 //! Official OpenAPI transport, deliberately separate from the native session.
 use std::collections::BTreeMap;
-use std::io::Read;
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::time::Duration;
 
 use reqwest::{
@@ -49,7 +50,7 @@ impl OpenApiClient {
         let base = Url::parse("https://open.douyin.com/").map_err(|_| "OpenAPI 地址无效")?;
         Self::with_base(base)
     }
-    fn with_base(base: Url) -> Result<Self, String> {
+    pub(crate) fn with_base(base: Url) -> Result<Self, String> {
         let client = Client::builder()
             .redirect(Policy::none())
             .connect_timeout(Duration::from_secs(10))
@@ -104,22 +105,7 @@ impl OpenApiClient {
         } else if !spec.form.is_empty() {
             request = request.form(&spec.form);
         }
-        let response = request.send().map_err(|_| "OpenAPI 请求失败或超时")?;
-        if !response.status().is_success() {
-            return Err(format!("OpenAPI 返回 HTTP {}", response.status().as_u16()));
-        }
-        let mut bytes = Vec::new();
-        response
-            .take(16 * 1024 * 1024 + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|_| "读取 OpenAPI 响应失败")?;
-        if bytes.len() > 16 * 1024 * 1024 {
-            return Err("OpenAPI 响应超过大小限制".into());
-        }
-        let value: Value =
-            serde_json::from_slice(&bytes).map_err(|_| "OpenAPI 返回非 JSON 内容")?;
-        validate_response(&value)?;
-        Ok(value)
+        read_response(request.send().map_err(|_| "OpenAPI 请求失败或超时")?)
     }
     pub fn authorize_url(
         &self,
@@ -163,46 +149,161 @@ impl OpenApiClient {
         self.request(request)
     }
 
+    /// Upload a video, using a separate five-minute timeout for each upload request.
     pub fn upload_video(
         &self,
         token: &str,
         open_id: &str,
         file: &std::path::Path,
     ) -> Result<Value, String> {
-        let url = self.url("/api/douyin/v1/video/upload_video/")?;
-        let part = Part::file(file)
-            .map_err(|_| "无法打开投稿视频文件")?
-            .file_name(
-                file.file_name()
-                    .and_then(|v| v.to_str())
-                    .unwrap_or("video.mp4")
-                    .to_owned(),
-            );
-        let form = Form::new().part("video", part);
-        let response = self
-            .client
-            .post(url)
-            .query(&[("open_id", open_id)])
-            .header("access-token", token)
-            .multipart(form)
-            .send()
-            .map_err(|_| "投稿视频上传失败或超时")?;
-        if !response.status().is_success() {
-            return Err(format!("OpenAPI 返回 HTTP {}", response.status().as_u16()));
-        }
-        let mut bytes = Vec::new();
-        response
-            .take(16 * 1024 * 1024 + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|_| "读取投稿上传响应失败")?;
-        if bytes.len() > 16 * 1024 * 1024 {
-            return Err("投稿上传响应超过大小限制".into());
-        }
-        let value: Value =
-            serde_json::from_slice(&bytes).map_err(|_| "投稿上传返回非 JSON 内容")?;
-        validate_response(&value)?;
-        Ok(value)
+        self.upload_video_with_timeout(token, open_id, file, Duration::from_secs(300))
     }
+
+    /// Stream the file without buffering it in memory. Files above 50 MiB use
+    /// Douyin's multipart protocol; this timeout applies separately to every step.
+    pub fn upload_video_with_timeout(
+        &self,
+        token: &str,
+        open_id: &str,
+        file: &std::path::Path,
+        timeout: Duration,
+    ) -> Result<Value, String> {
+        self.upload_video_inner(token, open_id, file, timeout, Chunking::DEFAULT)
+    }
+
+    fn upload_video_inner(
+        &self,
+        token: &str,
+        open_id: &str,
+        path: &std::path::Path,
+        timeout: Duration,
+        chunking: Chunking,
+    ) -> Result<Value, String> {
+        if token.trim().is_empty() || open_id.trim().is_empty() {
+            return Err("投稿上传需要 OAuth accessToken 和 openId".into());
+        }
+        if timeout.is_zero() {
+            return Err("投稿上传超时必须大于 0".into());
+        }
+        // Keep one opened file throughout the upload so a path replacement cannot
+        // silently switch a later part to a different file.
+        let mut file = File::open(path).map_err(|_| "无法打开投稿视频文件")?;
+        let metadata = file.metadata().map_err(|_| "无法读取投稿视频文件信息")?;
+        if !metadata.is_file() {
+            return Err("投稿路径必须是文件".into());
+        }
+        let size = metadata.len();
+        if size == 0 || size > MAX_VIDEO_BYTES {
+            return Err("投稿视频文件大小必须在 1 字节到 4 GiB 之间".into());
+        }
+        let name = path
+            .file_name()
+            .and_then(|v| v.to_str())
+            .unwrap_or("video.mp4")
+            .to_owned();
+        let request = |endpoint| {
+            self.url(endpoint).map(|url| {
+                self.client
+                    .post(url)
+                    .query(&[("open_id", open_id)])
+                    .header("access-token", token)
+                    .timeout(timeout)
+            })
+        };
+        if size <= chunking.threshold {
+            let part = Part::reader_with_length(file.take(size), size).file_name(name);
+            return send_upload(
+                request("/api/douyin/v1/video/upload_video/")?
+                    .multipart(Form::new().part("video", part)),
+            );
+        }
+
+        let initialized = send_upload(
+            request("/api/douyin/v1/video/init_video_part_upload/")?
+                .header("content-type", "application/json")
+                .body(""),
+        )?;
+        let upload_id = initialized
+            .pointer("/data/upload_id")
+            .and_then(Value::as_str)
+            .filter(|v| !v.trim().is_empty())
+            .ok_or("分片上传初始化响应缺少 upload_id")?;
+        let mut offset = 0;
+        let mut part_number = 1u64;
+        while offset < size {
+            let remaining = size - offset;
+            // The documented minimum also applies to the tail: combine a short
+            // tail with the preceding chunk instead of sending a tiny final part.
+            let part_size =
+                if remaining <= chunking.size || remaining - chunking.size < chunking.minimum {
+                    remaining
+                } else {
+                    chunking.size
+                };
+            file.seek(SeekFrom::Start(offset))
+                .map_err(|_| "无法定位投稿视频分片")?;
+            let reader = file
+                .try_clone()
+                .map_err(|_| "无法读取投稿视频分片")?
+                .take(part_size);
+            let part = Part::reader_with_length(reader, part_size).file_name(name.clone());
+            send_upload(
+                request("/api/douyin/v1/video/upload_video_part/")?
+                    .query(&[
+                        ("upload_id", upload_id.to_owned()),
+                        ("part_number", part_number.to_string()),
+                    ])
+                    .multipart(Form::new().part("video", part)),
+            )
+            .map_err(|error| format!("视频分片 {part_number} 上传失败：{error}"))?;
+            offset += part_size;
+            part_number += 1;
+        }
+        send_upload(
+            request("/api/douyin/v1/video/complete_video_part_upload/")?
+                .query(&[("upload_id", upload_id)])
+                .header("content-type", "application/json")
+                .body(""),
+        )
+    }
+}
+
+pub const MAX_VIDEO_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
+#[derive(Clone, Copy)]
+struct Chunking {
+    threshold: u64,
+    size: u64,
+    minimum: u64,
+}
+
+impl Chunking {
+    const DEFAULT: Self = Self {
+        threshold: 50 * 1024 * 1024,
+        size: 20 * 1024 * 1024,
+        minimum: 5 * 1024 * 1024,
+    };
+}
+
+fn send_upload(request: reqwest::blocking::RequestBuilder) -> Result<Value, String> {
+    read_response(request.send().map_err(|_| "投稿视频上传失败或超时")?)
+}
+
+fn read_response(response: reqwest::blocking::Response) -> Result<Value, String> {
+    if !response.status().is_success() {
+        return Err(format!("OpenAPI 返回 HTTP {}", response.status().as_u16()));
+    }
+    let mut bytes = Vec::new();
+    response
+        .take(16 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "读取 OpenAPI 响应失败")?;
+    if bytes.len() > 16 * 1024 * 1024 {
+        return Err("OpenAPI 响应超过大小限制".into());
+    }
+    let value: Value = serde_json::from_slice(&bytes).map_err(|_| "OpenAPI 返回非 JSON 内容")?;
+    validate_response(&value)?;
+    Ok(value)
 }
 
 fn validate_response(value: &Value) -> Result<(), String> {
@@ -293,5 +394,344 @@ mod tests {
         let params: BTreeMap<_, _> = parsed.query_pairs().collect();
         assert_eq!(params["state"], "random-state");
         assert_eq!(params["redirect_uri"], "http://127.0.0.1:8787/callback");
+    }
+    struct CapturedRequest {
+        target: String,
+        headers: BTreeMap<String, String>,
+        body: Vec<u8>,
+    }
+
+    struct Reply {
+        status: u16,
+        body: String,
+        location: Option<String>,
+    }
+
+    fn ok_reply(body: Value) -> Reply {
+        Reply {
+            status: 200,
+            body: body.to_string(),
+            location: None,
+        }
+    }
+
+    fn read_request(stream: &mut std::net::TcpStream) -> CapturedRequest {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut head = Vec::new();
+        let mut byte = [0];
+        while !head.ends_with(b"\r\n\r\n") {
+            stream.read_exact(&mut byte).unwrap();
+            head.push(byte[0]);
+            assert!(head.len() < 16 * 1024);
+        }
+        let head = String::from_utf8(head).unwrap();
+        let mut lines = head.lines();
+        let first = lines.next().unwrap();
+        assert!(first.starts_with("POST "));
+        let target = first.split_whitespace().nth(1).unwrap().to_owned();
+        let headers: BTreeMap<_, _> = lines
+            .filter_map(|line| line.split_once(':'))
+            .map(|(key, value)| (key.to_ascii_lowercase(), value.trim().to_owned()))
+            .collect();
+        let length: usize = headers["content-length"].parse().unwrap();
+        assert!(length < 1024 * 1024);
+        let mut body = vec![0; length];
+        stream.read_exact(&mut body).unwrap();
+        CapturedRequest {
+            target,
+            headers,
+            body,
+        }
+    }
+
+    fn accept_request(server: &TcpListener) -> std::net::TcpStream {
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            match server.accept() {
+                Ok((stream, _)) => return stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "missing upload request"
+                    );
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("accept failed: {error}"),
+            }
+        }
+    }
+
+    fn upload_fixture(
+        replies: Vec<Reply>,
+    ) -> (
+        OpenApiClient,
+        std::thread::JoinHandle<(Vec<CapturedRequest>, TcpListener)>,
+    ) {
+        let server = TcpListener::bind("127.0.0.1:0").unwrap();
+        server.set_nonblocking(true).unwrap();
+        let base = Url::parse(&format!("http://{}/", server.local_addr().unwrap())).unwrap();
+        let worker = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for reply in replies {
+                let mut stream = accept_request(&server);
+                requests.push(read_request(&mut stream));
+                write!(
+                    stream,
+                    "HTTP/1.1 {} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
+                    reply.status,
+                    reply.body.len()
+                )
+                .unwrap();
+                if let Some(location) = reply.location {
+                    write!(stream, "Location: {location}\r\n").unwrap();
+                }
+                write!(stream, "\r\n{}", reply.body).unwrap();
+            }
+            (requests, server)
+        });
+        (OpenApiClient::with_base(base).unwrap(), worker)
+    }
+
+    fn fixture_file(bytes: &[u8]) -> tempfile::NamedTempFile {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(bytes).unwrap();
+        file
+    }
+
+    fn upload_query(request: &CapturedRequest) -> (String, BTreeMap<String, String>) {
+        let url = Url::parse(&format!("http://fixture{}", request.target)).unwrap();
+        (
+            url.path().to_owned(),
+            url.query_pairs().into_owned().collect(),
+        )
+    }
+
+    fn multipart_video(request: &CapturedRequest) -> &[u8] {
+        let content_type = &request.headers["content-type"];
+        assert!(content_type.starts_with("multipart/form-data; boundary="));
+        let boundary = content_type.split("boundary=").nth(1).unwrap();
+        let prefix = format!("--{boundary}\r\n");
+        let suffix = format!("\r\n--{boundary}--\r\n");
+        assert!(request.body.starts_with(prefix.as_bytes()));
+        assert!(request.body.ends_with(suffix.as_bytes()));
+        let separator = request
+            .body
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .unwrap();
+        let part_headers = String::from_utf8_lossy(&request.body[..separator]).to_ascii_lowercase();
+        assert!(part_headers.contains("content-disposition: form-data; name=\"video\"; filename="));
+        &request.body[separator + 4..request.body.len() - suffix.len()]
+    }
+
+    fn assert_upload_credentials(request: &CapturedRequest) {
+        assert_eq!(request.headers["access-token"], "fixture-token");
+        assert!(!request.headers.contains_key("cookie"));
+        assert!(!request.headers.contains_key("authorization"));
+        assert!(!request.target.contains("fixture-token"));
+        assert_eq!(upload_query(request).1["open_id"], "user/+ fixture");
+    }
+
+    fn assert_no_more_requests(server: TcpListener) {
+        assert_eq!(
+            server.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+
+    #[test]
+    fn small_video_upload_sends_sized_multipart_and_isolated_credentials() {
+        let bytes = b"\0\0\0\x18ftypmp42fixture-video";
+        let file = fixture_file(bytes);
+        let uploaded = json!({"data":{"error_code":0,"video":{"video_id":"encrypted-video"}}});
+        let (client, worker) = upload_fixture(vec![ok_reply(uploaded.clone())]);
+        assert_eq!(
+            client
+                .upload_video("fixture-token", "user/+ fixture", file.path())
+                .unwrap(),
+            uploaded
+        );
+        let (requests, server) = worker.join().unwrap();
+        assert_eq!(requests.len(), 1);
+        let request = &requests[0];
+        assert_eq!(
+            upload_query(request).0,
+            "/api/douyin/v1/video/upload_video/"
+        );
+        assert_upload_credentials(request);
+        assert_eq!(multipart_video(request), bytes);
+        assert_no_more_requests(server);
+    }
+
+    const TEST_CHUNKS: Chunking = Chunking {
+        threshold: 8,
+        size: 6,
+        minimum: 2,
+    };
+
+    #[test]
+    fn chunked_upload_preserves_order_bytes_and_merges_short_tail() {
+        let bytes: Vec<u8> = (0..19).collect();
+        let file = fixture_file(&bytes);
+        let uploaded = json!({"data":{"error_code":0,"video":{"video_id":"encrypted-video"}}});
+        let mut replies = vec![ok_reply(
+            json!({"data":{"error_code":0,"upload_id":"upload/+ fixture"}}),
+        )];
+        replies.extend((0..3).map(|_| ok_reply(json!({"data":{"error_code":0}}))));
+        replies.push(ok_reply(uploaded.clone()));
+        let (client, worker) = upload_fixture(replies);
+        assert_eq!(
+            client
+                .upload_video_inner(
+                    "fixture-token",
+                    "user/+ fixture",
+                    file.path(),
+                    Duration::from_secs(3),
+                    TEST_CHUNKS,
+                )
+                .unwrap(),
+            uploaded
+        );
+        let (requests, server) = worker.join().unwrap();
+        assert_eq!(requests.len(), 5);
+        assert_eq!(
+            upload_query(&requests[0]).0,
+            "/api/douyin/v1/video/init_video_part_upload/"
+        );
+        assert!(requests[0].body.is_empty());
+        assert_eq!(requests[0].headers["content-type"], "application/json");
+        let mut rebuilt = Vec::new();
+        for (index, request) in requests[1..4].iter().enumerate() {
+            assert_upload_credentials(request);
+            let (path, query) = upload_query(request);
+            assert_eq!(path, "/api/douyin/v1/video/upload_video_part/");
+            assert_eq!(query["upload_id"], "upload/+ fixture");
+            assert_eq!(query["part_number"], (index + 1).to_string());
+            let payload = multipart_video(request);
+            assert_eq!(payload.len(), [6, 6, 7][index]);
+            rebuilt.extend_from_slice(payload);
+        }
+        assert_eq!(rebuilt, bytes);
+        assert_eq!(
+            upload_query(&requests[4]).0,
+            "/api/douyin/v1/video/complete_video_part_upload/"
+        );
+        assert_eq!(
+            upload_query(&requests[4]).1["upload_id"],
+            "upload/+ fixture"
+        );
+        assert_eq!(requests[4].headers["content-type"], "application/json");
+        assert!(requests[4].body.is_empty());
+        for request in &requests {
+            assert_upload_credentials(request);
+        }
+        assert_no_more_requests(server);
+    }
+
+    #[test]
+    fn rejected_part_stops_before_later_parts_and_completion() {
+        let file = fixture_file(&[1; 19]);
+        let (client, worker) = upload_fixture(vec![
+            ok_reply(json!({"data":{"error_code":0,"upload_id":"upload-id"}})),
+            ok_reply(json!({"data":{"error_code":0}})),
+            ok_reply(json!({"data":{"error_code":2114021,"description":"secret-token"}})),
+        ]);
+        let error = client
+            .upload_video_inner(
+                "fixture-token",
+                "user/+ fixture",
+                file.path(),
+                Duration::from_secs(3),
+                TEST_CHUNKS,
+            )
+            .unwrap_err();
+        assert!(error.contains("分片 2"));
+        assert!(error.contains("2114021"));
+        assert!(!error.contains("secret-token"));
+        let (requests, server) = worker.join().unwrap();
+        assert_eq!(requests.len(), 3);
+        assert_no_more_requests(server);
+    }
+
+    #[test]
+    fn missing_upload_id_stops_before_sending_video_bytes() {
+        let file = fixture_file(&[1; 19]);
+        let (client, worker) = upload_fixture(vec![ok_reply(json!({"data":{"error_code":0}}))]);
+        assert!(
+            client
+                .upload_video_inner(
+                    "fixture-token",
+                    "user/+ fixture",
+                    file.path(),
+                    Duration::from_secs(3),
+                    TEST_CHUNKS,
+                )
+                .unwrap_err()
+                .contains("upload_id")
+        );
+        let (requests, server) = worker.join().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].body.is_empty());
+        assert_no_more_requests(server);
+    }
+
+    #[test]
+    fn upload_redirect_never_forwards_file_or_credentials() {
+        let destination = TcpListener::bind("127.0.0.1:0").unwrap();
+        destination.set_nonblocking(true).unwrap();
+        let (client, worker) = upload_fixture(vec![Reply {
+            status: 307,
+            body: String::new(),
+            location: Some(format!(
+                "http://{}/stolen",
+                destination.local_addr().unwrap()
+            )),
+        }]);
+        let file = fixture_file(b"private video");
+        assert!(
+            client
+                .upload_video("fixture-token", "user/+ fixture", file.path())
+                .unwrap_err()
+                .contains("307")
+        );
+        let (requests, server) = worker.join().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_no_more_requests(server);
+        assert_no_more_requests(destination);
+    }
+
+    #[test]
+    fn upload_uses_its_configured_request_timeout() {
+        let server = TcpListener::bind("127.0.0.1:0").unwrap();
+        server.set_nonblocking(true).unwrap();
+        let base = Url::parse(&format!("http://{}/", server.local_addr().unwrap())).unwrap();
+        let worker = std::thread::spawn(move || {
+            let mut stream = accept_request(&server);
+            let request = read_request(&mut stream);
+            std::thread::sleep(Duration::from_millis(300));
+            let body = r#"{"data":{"error_code":0,"video":{"video_id":"late"}}}"#;
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            request
+        });
+        let file = fixture_file(b"timeout fixture");
+        assert!(
+            OpenApiClient::with_base(base)
+                .unwrap()
+                .upload_video_with_timeout(
+                    "fixture-token",
+                    "user/+ fixture",
+                    file.path(),
+                    Duration::from_millis(30),
+                )
+                .unwrap_err()
+                .contains("上传失败或超时")
+        );
+        assert_upload_credentials(&worker.join().unwrap());
     }
 }
