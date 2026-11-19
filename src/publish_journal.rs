@@ -460,4 +460,190 @@ mod tests {
         };
         run_child(true);
         drop(journal);
-        run_child(fals
+        run_child(false);
+    }
+
+    #[test]
+    fn submitting_survives_abrupt_process_exit_and_cannot_be_reset() {
+        const DIRECTORY_ENV: &str = "DOUYIN_JOURNAL_CRASH_TEST_DIRECTORY";
+        if let Some(directory) = std::env::var_os(DIRECTORY_ENV) {
+            let mut journal = open(Path::new(&directory), &metadata()).unwrap();
+            let mut submitted_intent = journal.value().clone();
+            submitted_intent["stage"] = json!("submitting");
+            journal.save(submitted_intent).unwrap();
+            // Deliberately skip Drop to model a process disappearing after its
+            // durable submit intent, before the network result was recorded.
+            std::process::exit(0);
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "publish_journal::tests::submitting_survives_abrupt_process_exit_and_cannot_be_reset",
+            ])
+            .env(DIRECTORY_ENV, directory.path())
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let mut recovered = open(directory.path(), &metadata()).unwrap();
+        assert!(recovered.submission_started());
+        assert_eq!(recovered.value()["stage"], "submitting");
+        assert!(recovered.save(metadata()).unwrap_err().contains("不能退回"));
+        assert_eq!(recovered.value()["stage"], "submitting");
+    }
+
+    #[test]
+    fn all_observed_submission_outcomes_block_automatic_resubmission() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut journal = open(directory.path(), &metadata()).unwrap();
+        assert!(!journal.submission_started());
+        for state in [
+            "submitting",
+            "unknown",
+            "submitted",
+            "reviewing",
+            "public",
+            "private",
+            "friends",
+            "rejected",
+        ] {
+            let mut value = journal.value().clone();
+            value["stage"] = json!(state);
+            journal.save(value).unwrap();
+            assert!(journal.submission_started(), "{state}");
+            assert!(journal.save(metadata()).is_err(), "{state}");
+        }
+    }
+
+    #[test]
+    fn corrupted_oversized_and_misbound_records_are_not_overwritten() {
+        let directory = tempfile::tempdir().unwrap();
+        let journal = open(directory.path(), &metadata()).unwrap();
+        let path = journal.path().to_owned();
+        drop(journal);
+
+        let mut wrong_account = metadata();
+        wrong_account["account_id"] = json!("another-account");
+        let mut wrong_video = metadata();
+        wrong_video["video_sha256"] = json!("b".repeat(64));
+        let mut unknown_stage = metadata();
+        unknown_stage["stage"] = json!("unrecognized");
+        let mut wrong_schema = metadata();
+        wrong_schema["schema"] = json!(2);
+        let mut missing_metadata = metadata();
+        missing_metadata.as_object_mut().unwrap().remove("title");
+        let cases = [
+            b"{broken".to_vec(),
+            vec![b' '; MAX_RECORD_BYTES as usize + 1],
+            serde_json::to_vec(&wrong_account).unwrap(),
+            serde_json::to_vec(&wrong_video).unwrap(),
+            serde_json::to_vec(&unknown_stage).unwrap(),
+            serde_json::to_vec(&wrong_schema).unwrap(),
+            serde_json::to_vec(&missing_metadata).unwrap(),
+        ];
+        for corrupted in cases {
+            fs::write(&path, &corrupted).unwrap();
+            assert!(open(directory.path(), &metadata()).is_err());
+            assert_eq!(fs::read(&path).unwrap(), corrupted);
+        }
+    }
+
+    #[test]
+    fn saves_replace_a_complete_record_atomically_and_preserve_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut journal = open(directory.path(), &metadata()).unwrap();
+        let path = journal.path().to_owned();
+        let mut previous_handle = File::open(&path).unwrap();
+        let mut updated = journal.value().clone();
+        updated["stage"] = json!("submitting");
+        updated["attempted_at"] = json!(1_795_100_000_u64);
+        journal.save(updated.clone()).unwrap();
+
+        let mut old_bytes = Vec::new();
+        previous_handle.read_to_end(&mut old_bytes).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&old_bytes).unwrap()["stage"],
+            "prepared"
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&fs::read(&path).unwrap()).unwrap(),
+            updated
+        );
+        assert_eq!(journal.value(), &updated);
+
+        for field in IMMUTABLE_FIELDS {
+            let mut invalid = updated.clone();
+            invalid[*field] = json!("changed");
+            assert!(journal.save(invalid).is_err(), "{field}");
+            assert_eq!(journal.value(), &updated);
+        }
+        let mut oversized = updated.clone();
+        oversized["unexpected_large_response"] = json!("x".repeat(MAX_RECORD_BYTES as usize));
+        assert!(journal.save(oversized).is_err());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&fs::read(&path).unwrap()).unwrap(),
+            updated
+        );
+    }
+
+    #[test]
+    fn record_key_uses_only_the_account_and_canonical_video_hash() {
+        let directory = Path::new("records");
+        let digest = "a".repeat(64);
+        let path = record_path(directory, ACCOUNT, &digest);
+        assert_eq!(path, record_path(directory, ACCOUNT, &digest));
+        assert_ne!(path, record_path(directory, "other-account", &digest));
+        assert_ne!(path, record_path(directory, ACCOUNT, &"b".repeat(64)));
+        assert_eq!(path.file_stem().unwrap().len(), 64);
+        assert!(!path.to_string_lossy().contains(ACCOUNT));
+        assert!(validate_identity(ACCOUNT, &"A".repeat(64)).is_err());
+        assert!(validate_identity("account with spaces", &digest).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn records_locks_and_directory_keep_private_permissions_after_replacement() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let directory = temporary.path().join("publish-local");
+        let mut journal = open(&directory, &metadata()).unwrap();
+        let mut value = journal.value().clone();
+        value["stage"] = json!("submitting");
+        journal.save(value).unwrap();
+        for (path, mode) in [
+            (directory, 0o700),
+            (journal.path().to_owned(), 0o600),
+            (journal.path().with_extension("lock"), 0o600),
+        ] {
+            assert_eq!(
+                fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                mode
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_record_or_lock_is_rejected_without_touching_its_target() {
+        use std::os::unix::fs::symlink;
+
+        for replace_lock in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let journal = open(directory.path(), &metadata()).unwrap();
+            let path = if replace_lock {
+                journal.path().with_extension("lock")
+            } else {
+                journal.path().to_owned()
+            };
+            drop(journal);
+            let target = directory.path().join("unrelated");
+            fs::write(&target, b"preserve").unwrap();
+            fs::remove_file(&path).unwrap();
+            symlink(&target, &path).unwrap();
+            assert!(open(directory.path(), &metadata()).is_err());
+            assert_eq!(fs::read(&target).unwrap(), b"preserve");
+        }
+    }
+}
