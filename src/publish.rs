@@ -21,6 +21,9 @@ pub struct PublishArgs {
 
 #[derive(Subcommand)]
 enum PublishCommand {
+    /// Rust 原生上传和投稿；使用当前创作者会话，无需运行手机或浏览器
+    #[command(visible_alias = "native")]
+    App(crate::publish_native::NativeArgs),
     /// 上传并投稿；自动保存进度，可先用 --dry-run 检查
     Video(VideoArgs),
     /// 使用已上传的视频继续创建作品，不重新上传
@@ -132,14 +135,21 @@ impl Drop for Journal {
 
 pub fn run(args: PublishArgs) -> Result<(), String> {
     let result = match args.command {
+        PublishCommand::App(args) => crate::publish_native::run(args)?,
         PublishCommand::Video(args) => publish_video(args)?,
         PublishCommand::Resume(args) => resume(args)?,
-        PublishCommand::Status { receipt } => summary(&read_receipt(&receipt)?, &receipt),
+        PublishCommand::Status { receipt } => match crate::publish_native::status(&receipt)? {
+            Some(value) => value,
+            None => summary(&read_receipt(&receipt)?, &receipt),
+        },
     };
     println!(
         "{}",
         serde_json::to_string_pretty(&result).map_err(|_| "投稿结果序列化失败")?
     );
+    if result["ok"] == false {
+        return Err("投稿结果尚未确认或未通过审核；请查看输出阶段及投稿记录，再回查本人作品。不会自动重复投稿".into());
+    }
     Ok(())
 }
 

@@ -26,7 +26,7 @@ enum Command {
     Mcp(douyin_cli::mcp_http::McpArgs),
     /// 调用官方 OpenAPI，需要开放平台应用授权
     Api(douyin_cli::api::ApiArgs),
-    /// 使用官方 OAuth 上传并发布视频
+    /// Rust 原生创作者投稿及官方 OAuth 视频投稿
     Publish(douyin_cli::publish::PublishArgs),
     /// 下载抖音 CDN 媒体 URL，不向媒体主机发送登录凭据
     Download {
@@ -59,6 +59,12 @@ enum Command {
 
 #[derive(Subcommand)]
 enum AuthCommand {
+    /// 导入同次正常登录的创作者会话材料；只做本地完整性验证
+    CreatorImport { file: std::path::PathBuf },
+    /// 离线检查创作者投稿凭据完整性，不输出秘密
+    CreatorStatus,
+    /// 清除独立保存的创作者会话
+    CreatorLogout,
     /// 保存独立的网页 Cookie，仅校验格式
     CookieLogin(douyin_cli::cookie::LoginArgs),
     /// 检查网页 Cookie；--offline 不访问服务端
@@ -139,6 +145,11 @@ fn run() -> Result<(), String> {
         } => {
             let result = match (adb, command) {
                 (true, None) => douyin_cli::auth::login_adb(serial.as_deref())?,
+                (false, Some(AuthCommand::CreatorImport { file })) => {
+                    douyin_cli::creator_auth::import_file(&file)?
+                }
+                (false, Some(AuthCommand::CreatorStatus)) => douyin_cli::creator_auth::status()?,
+                (false, Some(AuthCommand::CreatorLogout)) => douyin_cli::creator_auth::logout()?,
                 (false, Some(AuthCommand::CookieLogin(args))) => douyin_cli::cookie::login(args)?,
                 (false, Some(AuthCommand::CookieStatus { offline })) => {
                     douyin_cli::cookie::status(offline)?
