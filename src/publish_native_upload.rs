@@ -1229,6 +1229,9 @@ mod tests {
     }
 
     fn read_request(stream: &mut TcpStream) -> Request {
+        // BSD/macOS can inherit O_NONBLOCK from the listening socket. The
+        // fixture uses a bounded blocking reader for each accepted connection.
+        stream.set_nonblocking(false).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
