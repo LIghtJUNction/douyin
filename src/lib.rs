@@ -27,6 +27,7 @@ pub mod paging;
 pub mod phone;
 mod phone_support;
 pub mod publish;
+mod publish_journal;
 pub mod social;
 pub mod stats;
 pub mod store;
