@@ -403,7 +403,7 @@ douyin api request GET /oauth/userinfo/ --param open_id="OPEN_ID"
 
 ## 投稿
 
-原生创作者投稿入口为 `douyin publish app`（别名 `publish native`），由 Rust 直接上传、创建并回查，保留账号与视频摘要的防重复记录。当前本地回归通过，真实账号链路尚未验收；现有 Cookie 的本人身份检查返回状态码 8，且尚无已验证的原生新登录入口。已有完整同次创作者会话材料时可使用 `auth creator-import`；仅有普通 Cookie 不足以投稿。用法和准确边界见 [原生创作者投稿](docs/native-publishing.md)。
+原生创作者投稿入口为 `douyin publish app`（别名 `publish native`），由 Rust 直接上传、创建并回查，保留账号与视频摘要的防重复记录。当前本地回归通过，真实账号链路尚未验收；现有 Cookie 的本人身份检查返回状态码 8，原生扫码引导已提供但尚未完成登录与完整投稿材料的验收。已有完整同次创作者会话材料时可使用 `auth creator-import`；仅有普通 Cookie 不足以投稿。用法和准确边界见 [原生创作者投稿](docs/native-publishing.md)。
 
 以下为独立的官方 OAuth 投稿流程。
 

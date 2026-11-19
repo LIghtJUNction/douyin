@@ -59,6 +59,8 @@ enum Command {
 
 #[derive(Subcommand)]
 enum AuthCommand {
+    /// 原生扫码登录引导，支持恢复未完成会话
+    CreatorLogin(douyin_cli::creator_login::CreatorLoginArgs),
     /// 导入同次正常登录的创作者会话材料；只做本地完整性验证
     CreatorImport { file: std::path::PathBuf },
     /// 离线检查创作者投稿凭据完整性，不输出秘密
@@ -143,8 +145,12 @@ fn run() -> Result<(), String> {
             serial,
             command,
         } => {
+            let is_creator_login = matches!(&command, Some(AuthCommand::CreatorLogin(_)));
             let result = match (adb, command) {
                 (true, None) => douyin_cli::auth::login_adb(serial.as_deref())?,
+                (false, Some(AuthCommand::CreatorLogin(args))) => {
+                    douyin_cli::creator_login::run(args)?
+                }
                 (false, Some(AuthCommand::CreatorImport { file })) => {
                     douyin_cli::creator_auth::import_file(&file)?
                 }
@@ -182,6 +188,11 @@ fn run() -> Result<(), String> {
                 "{}",
                 serde_json::to_string_pretty(&result).map_err(|e| e.to_string())?
             );
+            if is_creator_login
+                && result.get("ok").and_then(serde_json::Value::as_bool) == Some(false)
+            {
+                return Err("原生创作者登录未通过身份核验；请查看上方结果与待核验会话状态".into());
+            }
         }
         Command::Device { serial } => {
             let adb = Adb::connect(serial.as_deref())?;

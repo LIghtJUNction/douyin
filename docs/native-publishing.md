@@ -8,7 +8,9 @@
 
 开发机上保存的旧 Cookie 可以被解析，但使用实际编译后的原生命令读取创作者本人身份，服务端返回状态码 `8`。一秒合成视频的 `--dry-run` 因此在 `account_check` 阶段退出，未上传或投稿。离线 `creator-status` 同时报告未配置完整创作者凭据。状态码本身不能区分过期、登录上下文不足或平台校验，需要先完成正常创作者登录。
 
-本版本提供严格的会话包导入与签名，**尚未提供已验证可用的新会话扫码登录或一键导出入口**。普通 Cookie 登录不等于投稿凭据完整；没有同次正常登录材料时，本命令会停止，不会伪造或混用其他登录环境的密钥。
+2026-11-19 的原生新登录实测中，按当时官方登录 UI 2.4.22 / SDK 3.4.20 补齐应用签名及请求参数后，取二维码成功；仅执行一次状态轮询，返回 HTTP 200、`error_code: 4031`。命令以非零状态退出并保存 `server_blocked` 终态，随后停止线上请求。未取得服务器票据与本次客户端公钥的绑定，未完成本人身份核验，`active` 和 `publishReady` 均为 `false`。该响应不足以确定拒绝原因。
+
+本版本提供原生扫码登录引导、严格的会话包导入与签名。**扫码引导尚未完成真实登录和完整投稿材料的验收**；取到二维码不等于登录成功，验证身份不等于激活了可投稿会话。普通 Cookie 登录不等于投稿凭据完整；没有同次正常登录材料时，本命令会停止，不会伪造或混用其他登录环境的密钥。
 
 ## 命令
 
@@ -17,6 +19,24 @@
 ```bash
 douyin auth creator-status
 ```
+
+原生扫码引导使用全新会话，不读取或覆盖当前活动账号：
+
+```bash
+# 生成二维码并轮询；验证码、平台拒绝、取消或过期都会停止
+douyin auth creator-login
+
+# 只生成二维码；保存本次私钥和 token，以便恢复同一次会话
+douyin auth creator-login --qr-only
+douyin auth creator-login --resume /path/to/pending-directory
+
+# 只轮询一次；仍待扫码时保存会话，之后使用 --resume 继续
+douyin auth creator-login --poll-once
+```
+
+默认等待 180 秒，`--timeout` 范围为 5–1800 秒；`--poll-interval` 范围为 5–60 秒，默认 5 秒。二维码和继续会话所需材料只保存在独立私有目录。服务器明确拒绝、取消、过期、密钥不匹配或响应无法解释后，不自动换码、不继续轮询，命令返回非零状态。`--qr-only` 正常返回的仍是未认证状态。 `--poll-once` 与 `--qr-only` 互斥；单次轮询后仍待确认时保留本次会话，不能把正常退出当作登录或投稿成功。
+
+确认登录后还要核对服务器票据与本次客户端公钥，并通过两个 Creator 同源接口核对本人 UID。缺少完整投稿材料时，结果保持 `publishReady: false`、`active: false`，只保存待核验材料，不改动活动账号。当前不能把这一引导步骤当作已经打通的新账号投稿入口。
 
 已经具有完整同次创作者会话包时，可从本机文件导入：
 
@@ -135,6 +155,8 @@ cargo fmt --all -- --check
 
 - [官方 Creator 账号接口调用代码](https://lf-fe-creator.douyinstatic.com/obj/douyn-creator-scm-cdn/douyin-creator-master-new/static/js/main.a20c35af.js)，2026-11-19 核对。
 - [官方内容管理状态与审核判断代码](https://lf-fe-creator.douyinstatic.com/obj/douyn-creator-scm-cdn/douyin-creator-content-new/micro/static/js/douyin_content_index_micro_new.ac16fbc2.js)，2026-11-19 核对。
+- [官方原生扫码登录所依据的登录 UI](https://auth.zijieapi.com/ucenter_web/app/douyin-login-new/dist/index.umd.production.js)，2026-11-19 实际加载版本 2.4.22 / SDK 3.4.20。
+- [官方安全消费者 SDK 引导](https://lf-fe-creator.douyinstatic.com/obj/passport-fe/ucenter_fe/byted/secure-consumer-sdk/creator/latest/bootstrap.umd.production.js)，同日核对。
 - [创作者上传接口协议参考，固定提交 fc8b9c2](https://github.com/cv-cat/DouYin_Spider/blob/fc8b9c2490a9561265425c26058290f01c064eda/dy_apis/douyin_creator_api.py)。
 - [VOD 签名协议参考，同一固定提交](https://github.com/cv-cat/DouYin_Spider/blob/fc8b9c2490a9561265425c26058290f01c064eda/utils/imagex_sign.py)。
 - [原生客户端与 HTTP fixture](../src/publish_native_client.rs)、[上传模块](../src/publish_native_upload.rs)、[会话签名](../src/creator_auth.rs)、[事务记录](../src/publish_journal.rs)、[CLI 回归](../tests/publish_native_cli.rs)。
