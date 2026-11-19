@@ -196,10 +196,10 @@ impl CreatorAuth {
                 "creator 会话包缺少同域 Cookie csrf_session_id，不能混用 www 域 CSRF".into(),
             );
         }
-        if let Some(token) = unique_cookie(&parsed, "msToken")? {
-            if token != bundle.ms_token {
-                return Err("creator ms_token 与同次 Cookie 不匹配".into());
-            }
+        if let Some(token) = unique_cookie(&parsed, "msToken")?
+            && token != bundle.ms_token
+        {
+            return Err("creator ms_token 与同次 Cookie 不匹配".into());
         }
         validate_platform(&bundle.platform_params, &bundle.user_agent)?;
         let secret = parse_private_key(&bundle.ticket_guard.private_key)?;
@@ -699,7 +699,9 @@ fn decode_hex(value: &str) -> Option<Vec<u8>> {
     }
     value
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let high = (pair[0] as char).to_digit(16)?;
             let low = (pair[1] as char).to_digit(16)?;

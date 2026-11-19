@@ -581,10 +581,10 @@ fn parse_upload_headers(value: Option<&Value>) -> Result<HeaderMap, String> {
             .map_err(|_| "native/upload/apply: 上传扩展头名称无效")?;
         let value =
             HeaderValue::from_str(value).map_err(|_| "native/upload/apply: 上传扩展头值无效")?;
-        if let Some(existing) = headers.get(&name) {
-            if existing != &value {
-                return Err("native/upload/apply: 同名上传扩展头冲突".into());
-            }
+        if let Some(existing) = headers.get(&name)
+            && existing != value
+        {
+            return Err("native/upload/apply: 同名上传扩展头冲突".into());
         }
         headers.insert(name, value);
     }
@@ -639,10 +639,10 @@ fn parse_uploaded_video(
     {
         return Err("native/upload/commit: 服务端视频字节数与上传文件不一致".into());
     }
-    if let Some(server_md5) = meta["Md5"].as_str().filter(|s| !s.is_empty()) {
-        if !server_md5.eq_ignore_ascii_case(&md5) {
-            return Err("native/upload/commit: 服务端 MD5 与实际上传字节不一致".into());
-        }
+    if let Some(server_md5) = meta["Md5"].as_str().filter(|s| !s.is_empty())
+        && !server_md5.eq_ignore_ascii_case(&md5)
+    {
+        return Err("native/upload/commit: 服务端 MD5 与实际上传字节不一致".into());
     }
     let format = meta["Format"]
         .as_str()
@@ -882,7 +882,7 @@ fn secret_field(value: &Value, names: &[&str], max: usize) -> Result<String, Str
             !s.is_empty()
                 && s.len() <= max
                 && s.trim() == *s
-                && s.bytes().all(|b| b >= 0x21 && b <= 0x7e)
+                && s.bytes().all(|b| (0x21..=0x7e).contains(&b))
         })
         .ok_or("native/upload/auth: 临时上传凭据缺少必要字段或格式无效")?;
     Ok(text.to_owned())
@@ -925,7 +925,7 @@ fn normalize_epoch(epoch: u64) -> Result<u64, String> {
 }
 
 fn leap(year: u32) -> bool {
-    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+    year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
 }
 fn days_in_month(year: u32, month: u32) -> u32 {
     match month {

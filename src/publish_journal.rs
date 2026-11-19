@@ -405,10 +405,10 @@ mod tests {
         file.try_lock().unwrap();
         // A duplicated descriptor models the shared lock lifetime of a fork.
         let inherited = file.try_clone().unwrap();
-        let result = (|| -> Result<(), String> {
+        let result: Result<(), String> = {
             let _guard = LockGuard(file);
             Err("metadata mismatch".into())
-        })();
+        };
         assert!(result.is_err());
         let contender = OpenOptions::new()
             .read(true)

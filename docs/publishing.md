@@ -1,5 +1,7 @@
 # 视频投稿
 
+本文说明 `publish video` 的官方 OAuth 流程。独立的 `publish app` / `publish native` 入口见 [原生创作者投稿](native-publishing.md)，其中明确记录登录前提和线上验收边界。
+
 投稿将本地视频上传到抖音开放平台，再为当前 OAuth 授权账号创建作品。新接口要求应用已取得内容发布能力，且用户实际授予 `video.create.bind`；Android Token、网页 Cookie 和官方 OAuth 分别保存。
 
 ## 检查和投稿

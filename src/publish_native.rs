@@ -279,10 +279,10 @@ fn apply_outcome(record: &mut Value, outcome: Value) {
     if next == "submitted" && previous != "submitted" && known_submission(&previous) {
         record["last_known_stage"] = json!(previous);
     }
-    if next != "public" {
-        if let Some(url) = record.as_object_mut().and_then(|m| m.remove("share_url")) {
-            record["last_known_share_url"] = url;
-        }
+    if next != "public"
+        && let Some(url) = record.as_object_mut().and_then(|m| m.remove("share_url"))
+    {
+        record["last_known_share_url"] = url;
     }
     record["stage"] = json!(next);
     for field in [
