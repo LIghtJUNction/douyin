@@ -131,9 +131,7 @@ impl Journal {
         let directory = self.path.parent().ok_or("投稿记录目录无效")?;
         require_regular_if_present(&self.path)?;
         let pending = write_pending(directory, &bytes)?;
-        pending
-            .persist(&self.path)
-            .map_err(|_| "无法原子保存投稿记录")?;
+        persist_replacement(pending, &self.path)?;
         // The replacement may already be visible even if syncing the directory
         // fails. Keep the new intent in memory so an error cannot regress it.
         self.value = value;
@@ -310,6 +308,36 @@ fn write_pending(directory: &Path, bytes: &[u8]) -> Result<tempfile::NamedTempFi
         .and_then(|_| pending.as_file().sync_all())
         .map_err(|_| "无法持久保存投稿记录")?;
     Ok(pending)
+}
+
+fn persist_replacement(pending: tempfile::NamedTempFile, path: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        // tempfile::persist uses MoveFileExW, which cannot replace a destination
+        // while a reader still has it open. std::fs::rename also supports Windows'
+        // FileRenameInfoEx POSIX replacement, keeping the old reader's handle valid.
+        // keep() clears FILE_ATTRIBUTE_TEMPORARY before the replacement. Install a
+        // cleanup guard first so a failed keep/rename cannot leak the temporary file.
+        let mut cleanup = tempfile::TempPath::try_from_path(pending.path().to_owned())
+            .map_err(|error| atomic_save_error(&error))?;
+        let (_file, source) = pending
+            .keep()
+            .map_err(|error| atomic_save_error(&error.error))?;
+        fs::rename(&source, path).map_err(|error| atomic_save_error(&error))?;
+        cleanup.disable_cleanup(true);
+    }
+    #[cfg(not(windows))]
+    pending
+        .persist(path)
+        .map_err(|error| atomic_save_error(&error.error))?;
+    Ok(())
+}
+
+fn atomic_save_error(error: &std::io::Error) -> String {
+    match error.raw_os_error() {
+        Some(code) => format!("无法原子保存投稿记录（OS 错误 {code}）"),
+        None => "无法原子保存投稿记录".into(),
+    }
 }
 
 fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -584,6 +612,42 @@ mod tests {
         assert_eq!(
             serde_json::from_slice::<Value>(&fs::read(&path).unwrap()).unwrap(),
             updated
+        );
+    }
+
+    #[test]
+    fn failed_atomic_replacement_keeps_destination_and_cleans_temporary_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("occupied");
+        fs::create_dir(&destination).unwrap();
+        let sentinel = destination.join("sentinel");
+        fs::write(&sentinel, b"original contents").unwrap();
+        let pending = write_pending(directory.path(), b"replacement").unwrap();
+        let pending_path = pending.path().to_owned();
+
+        let error = persist_replacement(pending, &destination).unwrap_err();
+
+        assert!(error.contains("无法原子保存投稿记录"));
+        assert!(destination.is_dir());
+        assert_eq!(fs::read(sentinel).unwrap(), b"original contents");
+        assert!(!pending_path.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn replacement_clears_windows_temporary_attribute() {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_TEMPORARY: u32 = 0x100;
+
+        let directory = tempfile::tempdir().unwrap();
+        let mut journal = open(directory.path(), &metadata()).unwrap();
+        let mut updated = journal.value().clone();
+        updated["stage"] = json!("submitting");
+        journal.save(updated).unwrap();
+
+        assert_eq!(
+            fs::metadata(journal.path()).unwrap().file_attributes() & FILE_ATTRIBUTE_TEMPORARY,
+            0
         );
     }
 
