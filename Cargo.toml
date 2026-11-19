@@ -1,6 +1,6 @@
 [package]
 name = "douyin-cli"
-version = "2026.11.18"
+version = "2026.11.20"
 edition = "2024"
 rust-version = "1.100"
 description = "A Rust CLI reproducing Douyin Android workflows and livestreaming"
