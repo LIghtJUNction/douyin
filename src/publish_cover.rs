@@ -102,7 +102,9 @@ impl CoverSnapshot {
     }
 
     pub(crate) fn reader(&self) -> Result<File, String> {
-        self.file.reopen().map_err(|_| "无法读取封面快照")
+        self.file
+            .reopen()
+            .map_err(|_| "无法读取封面快照".to_owned())
     }
 }
 
