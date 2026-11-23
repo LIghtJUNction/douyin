@@ -53,6 +53,7 @@ impl OpenApiClient {
     pub(crate) fn with_base(base: Url) -> Result<Self, String> {
         let client = Client::builder()
             .redirect(Policy::none())
+            .retry(reqwest::retry::never())
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(30))
             .build()
@@ -169,6 +170,37 @@ impl OpenApiClient {
         timeout: Duration,
     ) -> Result<Value, String> {
         self.upload_video_inner(token, open_id, file, timeout, Chunking::DEFAULT)
+    }
+
+    /// Official v1 image upload. Only an already checked private JPEG snapshot
+    /// is accepted; this never reuses native Creator credentials or VOD URIs.
+    pub(crate) fn upload_cover(
+        &self,
+        token: &str,
+        open_id: &str,
+        cover: &crate::publish_cover::CoverSnapshot,
+        timeout: Duration,
+    ) -> Result<Value, String> {
+        if token.trim().is_empty() || open_id.trim().is_empty() || timeout.is_zero() {
+            return Err("封面上传需要有效 OAuth 身份和非零超时".into());
+        }
+        cover.receipt.validate()?;
+        let part = Part::reader_with_length(cover.reader()?, cover.receipt.bytes)
+            .file_name("cover.jpg")
+            .mime_str("image/jpeg")
+            .map_err(|_| "无法设置 JPEG 封面类型")?;
+        let request = self
+            .client
+            .post(self.url("/api/douyin/v1/video/upload_image/")?)
+            .query(&[("open_id", open_id)])
+            .header("access-token", token)
+            .timeout(timeout)
+            .multipart(Form::new().part("image", part));
+        read_response(
+            request
+                .send()
+                .map_err(|_| "封面上传失败或超时；未创建作品")?,
+        )
     }
 
     fn upload_video_inner(
@@ -562,6 +594,43 @@ mod tests {
         );
         assert_upload_credentials(request);
         assert_eq!(multipart_video(request), bytes);
+        assert_no_more_requests(server);
+    }
+
+    #[test]
+    fn jpeg_cover_upload_uses_official_image_field_and_same_oauth_identity() {
+        let bytes = b"\xff\xd8\xfffixture-jpeg\xff\xd9";
+        let file = fixture_file(bytes);
+        let cover = crate::publish_cover::CoverSnapshot::read(file.path()).unwrap();
+        let response = json!({"data":{"error_code":0,"image":{"image_id":"encrypted-cover"}}});
+        let (client, worker) = upload_fixture(vec![ok_reply(response.clone())]);
+        let actual = client
+            .upload_cover(
+                "fixture-token",
+                "user/+ fixture",
+                &cover,
+                Duration::from_secs(2),
+            )
+            .unwrap();
+        assert_eq!(actual, response);
+        let (requests, server) = worker.join().unwrap();
+        assert_eq!(requests.len(), 1);
+        let request = &requests[0];
+        assert_eq!(
+            upload_query(request).0,
+            "/api/douyin/v1/video/upload_image/"
+        );
+        assert_upload_credentials(request);
+        let body = String::from_utf8_lossy(&request.body);
+        assert!(body.contains("name=\"image\"; filename=\"cover.jpg\""));
+        assert!(body.contains("image/jpeg"));
+        assert!(
+            request
+                .body
+                .windows(bytes.len())
+                .any(|window| window == bytes)
+        );
+        assert!(!body.contains("name=\"video\""));
         assert_no_more_requests(server);
     }
 

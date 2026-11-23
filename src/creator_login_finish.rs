@@ -103,12 +103,13 @@ fn finalize_at_origin(
                 "readOnlyVerified": true,
                 "publishReady": false,
                 "active": false,
+                "qrActivationImplemented": false,
                 "account": account,
                 "missing": missing,
                 "pendingMaterial": path,
                 "uploadSent": false,
                 "createSent": false,
-                "nextAction": "继续取得本次登录的 Creator 发布材料；当前仅保存待完成会话，现有活动登录未替换",
+                "nextAction": "当前 CLI 没有从扫码结果收集完整 Creator 材料并激活投稿会话的实现；重复扫码不能补齐。用 auth creator-login --capabilities 查看有条件可用的会话包导入和官方 OAuth 路线",
                 "credentialValuesRedacted": true,
             })
         }
@@ -123,12 +124,14 @@ fn finalize_at_origin(
                 "readOnlyVerified": false,
                 "publishReady": false,
                 "active": false,
+                "qrActivationImplemented": false,
                 "reason": error,
                 "missing": missing,
                 "pendingMaterial": path,
                 "uploadSent": false,
                 "createSent": false,
                 "automaticRetry": false,
+                "nextAction": "先核实身份失败原因；当前扫码流程也不能激活投稿会话，可用 auth creator-login --capabilities 离线查看能力",
                 "credentialValuesRedacted": true,
             })
         }

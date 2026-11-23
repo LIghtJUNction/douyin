@@ -242,6 +242,9 @@ impl CreatorClient {
             "bytes":upload.size,"width":upload.width,"height":upload.height,
             "duration":upload.duration,"format":upload.format,
             "title":title,"visibility":visibility,"creation_id":creation_id,
+            "settings":crate::publish_options::Options::default()
+                .report(crate::publish_options::Backend::Native, None),
+            "cover_source":"uploaded_video_snapshot",
             "ready_to_publish":true,"create_sent":false
         });
         self.prepared = Some(Prepared {

@@ -7,6 +7,8 @@ use clap::{Args, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::publish_cover::{CoverReceipt, CoverSnapshot};
+use crate::publish_options::{Backend, Options};
 use crate::{oauth, openapi::OpenApiClient, store};
 
 use crate::openapi::MAX_VIDEO_BYTES;
@@ -68,8 +70,11 @@ struct VideoOptions {
     #[arg(long, value_enum, default_value_t = Visibility::Public)]
     visibility: Visibility,
     /// 从视频指定秒数截取封面，必须是有限非负数
-    #[arg(long)]
+    #[arg(long, conflicts_with = "cover")]
     cover_tsp: Option<f64>,
+    #[command(flatten)]
+    #[serde(default)]
+    extra: Options,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
@@ -94,6 +99,7 @@ struct ResumeArgs {
 #[serde(rename_all = "snake_case")]
 enum Stage {
     Uploading,
+    CoverUploading,
     Uploaded,
     Creating,
     Unknown,
@@ -111,6 +117,8 @@ struct Receipt {
     options: VideoOptions,
     video_id: Option<String>,
     item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cover: Option<CoverReceipt>,
 }
 
 struct Identity<'a> {
@@ -148,6 +156,9 @@ pub fn run(args: PublishArgs) -> Result<(), String> {
         serde_json::to_string_pretty(&result).map_err(|_| "投稿结果序列化失败")?
     );
     if result["ok"] == false {
+        if let Some(reason) = result.get("reason").and_then(Value::as_str) {
+            return Err(reason.to_owned());
+        }
         return Err("投稿结果尚未确认或未通过审核；请查看输出阶段及投稿记录，再回查本人作品。不会自动重复投稿".into());
     }
     Ok(())
@@ -161,10 +172,15 @@ impl VideoOptions {
         if self.cover_tsp.is_some_and(|v| !v.is_finite() || v < 0.0) {
             return Err("封面时间必须是有限的非负秒数".into());
         }
+        if self.cover_tsp.is_some() && self.extra.cover.is_some() {
+            return Err("--cover 与 --cover-tsp 互斥，必须明确选择封面来源".into());
+        }
+        self.extra.validate(Backend::OpenApi)?;
         Ok(())
     }
 
-    fn body(&self, video_id: &str) -> Value {
+    fn body(&self, video_id: &str, cover: Option<&CoverReceipt>) -> Result<Value, String> {
+        self.validate()?;
         let mut body = json!({
             "video_id": video_id,
             "text": self.title,
@@ -177,7 +193,19 @@ impl VideoOptions {
         if let Some(value) = self.cover_tsp {
             body["cover_tsp"] = json!(value);
         }
-        body
+        match (self.extra.cover.as_ref(), cover) {
+            (Some(_), Some(cover)) => {
+                cover.validate()?;
+                let image_id = cover
+                    .image_id
+                    .as_deref()
+                    .ok_or("自定义封面缺少已确认的 image_id；停止创建作品")?;
+                body["custom_cover_image_url"] = json!(image_id);
+            }
+            (None, None) => {}
+            _ => return Err("封面请求与上传记录不一致；停止创建作品".into()),
+        }
+        Ok(body)
     }
 }
 
@@ -234,8 +262,20 @@ fn publish_video(args: VideoArgs) -> Result<Value, String> {
     if !args.yes && !args.dry_run {
         return Err("投稿会上传文件并创建抖音作品，需要显式 --yes；只检查可使用 --dry-run".into());
     }
+    if args.dry_run
+        && let Some(report) = args.options.extra.blocked_preflight(Backend::OpenApi)
+    {
+        return Ok(report);
+    }
     args.options.validate()?;
     let bytes = validate_file(&args.file)?;
+    let cover = args
+        .options
+        .extra
+        .cover
+        .as_deref()
+        .map(CoverSnapshot::read)
+        .transpose()?;
     if args.receipt.as_ref().is_some_and(|p| p.exists()) {
         return Err("拒绝覆盖已有投稿记录；请使用 publish resume 或选择新路径".into());
     }
@@ -247,6 +287,10 @@ fn publish_video(args: VideoArgs) -> Result<Value, String> {
             "upload_mode": if bytes > 50 * 1024 * 1024 { "multipart" } else { "single" },
             "upload_timeout": args.upload_timeout, "visibility": args.options.visibility,
             "scope": PUBLISH_SCOPE, "authorization": "locally_verified",
+            "backend": "openapi", "uploaded": false, "submitted": false,
+            "settings": args.options.extra.report(Backend::OpenApi, None),
+            "cover": cover.as_ref().map(|c| &c.receipt),
+            "cover_validation": if cover.is_some() { Some("jpeg_markers_checked") } else { None },
         }));
     }
     let client = OpenApiClient::new()?;
@@ -259,6 +303,7 @@ fn publish_video(args: VideoArgs) -> Result<Value, String> {
         options: args.options,
         video_id: None,
         item_id: None,
+        cover: cover.as_ref().map(|c| c.receipt.clone()),
     };
     let journal = Journal::create(args.receipt.as_deref(), &receipt)?;
     eprintln!("投稿记录：{}", journal.path.display());
@@ -274,12 +319,51 @@ fn publish_video(args: VideoArgs) -> Result<Value, String> {
         "/data/video/video_id",
         "上传响应缺少 video_id",
     )?);
-    receipt.stage = Stage::Uploaded;
-    journal.write(&receipt)?;
+    finish_uploads(
+        &client,
+        &identity,
+        &journal,
+        &mut receipt,
+        cover.as_ref(),
+        Duration::from_secs(args.upload_timeout),
+    )?;
     if args.upload_only {
         return Ok(summary(&receipt, &journal.path));
     }
     create_video(&client, &identity, &journal, receipt)
+}
+
+fn finish_uploads(
+    client: &OpenApiClient,
+    identity: &Identity<'_>,
+    journal: &Journal,
+    receipt: &mut Receipt,
+    cover: Option<&CoverSnapshot>,
+    timeout: Duration,
+) -> Result<(), String> {
+    if let Some(cover) = cover {
+        // Save the completed video and cover intent before sending image bytes.
+        // A lost image response cannot silently become a coverless create.
+        receipt.stage = Stage::CoverUploading;
+        journal.write(receipt)?;
+        let uploaded = client.upload_cover(identity.token, identity.open_id, cover, timeout)?;
+        let image_id = response_id(
+            &uploaded,
+            "/data/image/image_id",
+            "封面响应缺少 image_id；停止创建作品",
+        )?;
+        receipt
+            .cover
+            .as_mut()
+            .ok_or("封面记录缺失；停止创建作品")?
+            .image_id = Some(image_id);
+    }
+    receipt.options.body(
+        receipt.video_id.as_deref().ok_or("缺少视频上传标识")?,
+        receipt.cover.as_ref(),
+    )?;
+    receipt.stage = Stage::Uploaded;
+    journal.write(receipt)
 }
 
 fn resume(args: ResumeArgs) -> Result<Value, String> {
@@ -303,6 +387,7 @@ fn resume(args: ResumeArgs) -> Result<Value, String> {
 fn can_resume(receipt: &Receipt, retry_create: bool) -> Result<(), String> {
     match receipt.stage {
         Stage::Uploading => Err("视频尚未完整上传，请重新运行 publish video".into()),
+        Stage::CoverUploading => Err("封面上传结果尚未完整保存；保留回执并核实，不能省略封面或自动重传后创建作品".into()),
         Stage::Creating | Stage::Unknown if !retry_create => Err(
             "上次创建结果待核实；请先在创作者中心检查作品，确认没有重复投稿后再使用 --retry-create --yes".into(),
         ),
@@ -320,7 +405,7 @@ fn create_video(
         .video_id
         .as_deref()
         .ok_or("投稿记录缺少已上传的视频标识")?;
-    let body = receipt.options.body(video_id);
+    let body = receipt.options.body(video_id, receipt.cover.as_ref())?;
     receipt.stage = Stage::Creating;
     journal.write(&receipt)?;
     eprintln!("正在创建作品...");
@@ -483,6 +568,18 @@ fn read_receipt(path: &Path) -> Result<Receipt, String> {
         return Err("投稿记录内容无效或版本不受支持".into());
     }
     receipt.options.validate()?;
+    match (receipt.options.extra.cover.as_ref(), receipt.cover.as_ref()) {
+        (Some(_), Some(cover)) => {
+            cover.validate()?;
+            if !matches!(receipt.stage, Stage::Uploading | Stage::CoverUploading)
+                && cover.image_id.is_none()
+            {
+                return Err("投稿记录缺少已确认的自定义封面 image_id".into());
+            }
+        }
+        (None, None) if receipt.stage != Stage::CoverUploading => {}
+        _ => return Err("投稿记录的封面意图不一致".into()),
+    }
     Ok(receipt)
 }
 
@@ -494,8 +591,16 @@ fn summary(receipt: &Receipt, path: &Path) -> Value {
         "video_id": receipt.video_id,
         "item_id": receipt.item_id,
         "visibility": receipt.options.visibility,
+        "cover": receipt.cover,
+        "settings": receipt.options.extra.report(Backend::OpenApi,
+            receipt.cover.as_ref().and_then(|cover| cover.image_id.as_deref())),
+        "create_sent": match receipt.stage {
+            Stage::Submitted => Some(true),
+            Stage::Creating | Stage::Unknown => None,
+            _ => Some(false),
+        },
         "review_status": if receipt.stage == Stage::Submitted { Some("not_queried") } else { None },
-        "requires_verification": matches!(receipt.stage, Stage::Creating | Stage::Unknown),
+        "requires_verification": matches!(receipt.stage, Stage::CoverUploading | Stage::Creating | Stage::Unknown),
     })
 }
 
@@ -509,6 +614,7 @@ mod tests {
             title: "测试 #Rust".into(),
             visibility: Visibility::Private,
             cover_tsp: Some(2.3),
+            extra: Options::default(),
         }
     }
     fn uploaded() -> Receipt {
@@ -521,6 +627,7 @@ mod tests {
             options: options(),
             video_id: Some("encrypted-video".into()),
             item_id: None,
+            cover: None,
         }
     }
     fn authorized() -> Value {
@@ -537,14 +644,19 @@ mod tests {
             (Visibility::Friends, 2),
         ] {
             opts.visibility = visibility;
-            let body = opts.body("encrypted");
+            let body = opts.body("encrypted", None).unwrap();
             assert_eq!(body["private_status"], code);
             assert_eq!(body["cover_tsp"], 2.3);
             assert_eq!(body["text"], opts.title);
             assert_eq!(body["video_id"], "encrypted");
         }
         opts.cover_tsp = None;
-        assert!(opts.body("encrypted").get("cover_tsp").is_none());
+        assert!(
+            opts.body("encrypted", None)
+                .unwrap()
+                .get("cover_tsp")
+                .is_none()
+        );
     }
 
     #[test]
@@ -642,6 +754,200 @@ mod tests {
         }
         receipt.stage = Stage::Uploading;
         assert!(can_resume(&receipt, true).is_err());
+        receipt.stage = Stage::CoverUploading;
+        assert!(can_resume(&receipt, true).is_err());
+    }
+
+    #[test]
+    fn custom_cover_requires_matching_receipt_and_survives_resume_without_local_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("receipt.json");
+        let mut receipt = uploaded();
+        receipt.options.cover_tsp = None;
+        receipt.options.extra.cover = Some(dir.path().join("deleted-after-upload.jpg"));
+        assert!(receipt.options.body("video", None).is_err());
+        receipt.cover = Some(CoverReceipt {
+            bytes: 20,
+            sha256: "a".repeat(64),
+            image_id: None,
+        });
+        assert!(
+            receipt
+                .options
+                .body("video", receipt.cover.as_ref())
+                .is_err()
+        );
+        receipt.cover.as_mut().unwrap().image_id = Some("encrypted-image-id".into());
+        let journal = Journal::create(Some(&path), &receipt).unwrap();
+        let restored = read_receipt(&path).unwrap();
+        let body = restored
+            .options
+            .body("video", restored.cover.as_ref())
+            .unwrap();
+        assert_eq!(body["custom_cover_image_url"], "encrypted-image-id");
+        assert!(body.get("cover_tsp").is_none());
+        assert!(can_resume(&restored, false).is_ok());
+        let report = summary(&restored, &path);
+        assert_eq!(report["settings"]["custom_cover"]["encoded"], true);
+        assert_eq!(report["create_sent"], false);
+        assert_eq!(report["settings"]["ai_generated"]["encoded"], false);
+        drop(journal);
+        receipt.options.extra.cover = None;
+        assert!(
+            receipt
+                .options
+                .body("video", receipt.cover.as_ref())
+                .is_err()
+        );
+        receipt.stage = Stage::Unknown;
+        assert_eq!(summary(&receipt, &path)["create_sent"], Value::Null);
+    }
+
+    #[test]
+    fn missing_image_id_keeps_cover_pending_and_never_sends_create() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let client = OpenApiClient::with_base(
+            url::Url::parse(&format!("http://{}/", server.server_addr())).unwrap(),
+        )
+        .unwrap();
+        let worker = std::thread::spawn(move || {
+            let mut request = server
+                .recv_timeout(Duration::from_secs(3))
+                .unwrap()
+                .unwrap();
+            assert!(
+                request
+                    .url()
+                    .starts_with("/api/douyin/v1/video/upload_image/?")
+            );
+            let mut bytes = Vec::new();
+            request.as_reader().read_to_end(&mut bytes).unwrap();
+            assert!(bytes.windows(12).any(|w| w == b"name=\"image\""));
+            request
+                .respond(tiny_http::Response::from_string(
+                    r#"{"data":{"error_code":0,"image":{}}}"#,
+                ))
+                .unwrap();
+            assert!(
+                server
+                    .recv_timeout(Duration::from_millis(100))
+                    .unwrap()
+                    .is_none()
+            );
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let cover_path = dir.path().join("cover.jpg");
+        std::fs::write(&cover_path, b"\xff\xd8\xfffixture\xff\xd9").unwrap();
+        let cover = CoverSnapshot::read(&cover_path).unwrap();
+        let mut receipt = uploaded();
+        receipt.options.cover_tsp = None;
+        receipt.options.extra.cover = Some(cover_path);
+        receipt.cover = Some(cover.receipt.clone());
+        let path = dir.path().join("receipt.json");
+        let journal = Journal::create(Some(&path), &receipt).unwrap();
+        let saved = authorized();
+        let identity = identity(&saved, None).unwrap();
+        assert!(
+            finish_uploads(
+                &client,
+                &identity,
+                &journal,
+                &mut receipt,
+                Some(&cover),
+                Duration::from_secs(2)
+            )
+            .is_err()
+        );
+        let restored = read_receipt(&path).unwrap();
+        assert_eq!(restored.stage, Stage::CoverUploading);
+        assert_eq!(restored.video_id.as_deref(), Some("encrypted-video"));
+        assert!(can_resume(&restored, true).is_err());
+        assert!(
+            restored
+                .options
+                .body("video", restored.cover.as_ref())
+                .is_err()
+        );
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn uploaded_image_id_reaches_exactly_one_create_and_is_saved_in_receipt() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let client = OpenApiClient::with_base(
+            url::Url::parse(&format!("http://{}/", server.server_addr())).unwrap(),
+        )
+        .unwrap();
+        let worker = std::thread::spawn(move || {
+            for step in 0..2 {
+                let mut request = server
+                    .recv_timeout(Duration::from_secs(3))
+                    .unwrap()
+                    .unwrap();
+                let mut bytes = Vec::new();
+                request.as_reader().read_to_end(&mut bytes).unwrap();
+                let response = if step == 0 {
+                    assert!(
+                        request
+                            .url()
+                            .starts_with("/api/douyin/v1/video/upload_image/?")
+                    );
+                    json!({"data":{"error_code":0,"image":{"image_id":"server-image/+id"}}})
+                } else {
+                    assert!(
+                        request
+                            .url()
+                            .starts_with("/api/douyin/v1/video/create_video/?")
+                    );
+                    let body: Value = serde_json::from_slice(&bytes).unwrap();
+                    assert_eq!(body["custom_cover_image_url"], "server-image/+id");
+                    assert_eq!(body["video_id"], "encrypted-video");
+                    assert!(body.get("cover_tsp").is_none());
+                    json!({"data":{"error_code":0,"item_id":"created-item"}})
+                };
+                request
+                    .respond(tiny_http::Response::from_string(response.to_string()))
+                    .unwrap();
+            }
+            assert!(
+                server
+                    .recv_timeout(Duration::from_millis(100))
+                    .unwrap()
+                    .is_none()
+            );
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let cover_path = dir.path().join("cover.jpg");
+        std::fs::write(&cover_path, b"\xff\xd8\xfffixture\xff\xd9").unwrap();
+        let cover = CoverSnapshot::read(&cover_path).unwrap();
+        let mut receipt = uploaded();
+        receipt.options.cover_tsp = None;
+        receipt.options.extra.cover = Some(cover_path);
+        receipt.cover = Some(cover.receipt.clone());
+        let path = dir.path().join("receipt.json");
+        let journal = Journal::create(Some(&path), &receipt).unwrap();
+        let saved = authorized();
+        let identity = identity(&saved, None).unwrap();
+        finish_uploads(
+            &client,
+            &identity,
+            &journal,
+            &mut receipt,
+            Some(&cover),
+            Duration::from_secs(2),
+        )
+        .unwrap();
+        assert_eq!(read_receipt(&path).unwrap().stage, Stage::Uploaded);
+        let result = create_video(&client, &identity, &journal, receipt).unwrap();
+        assert_eq!(result["settings"]["custom_cover"]["encoded"], true);
+        assert_eq!(result["create_sent"], true);
+        let restored = read_receipt(&path).unwrap();
+        assert_eq!(restored.stage, Stage::Submitted);
+        assert_eq!(
+            restored.cover.unwrap().image_id.as_deref(),
+            Some("server-image/+id")
+        );
+        worker.join().unwrap();
     }
 
     #[test]
@@ -679,7 +985,7 @@ mod tests {
                 let mut body = vec![0; length];
                 stream.read_exact(&mut body).unwrap();
                 let body: Value = serde_json::from_slice(&body).unwrap();
-                assert_eq!(body, options().body("encrypted-video"));
+                assert_eq!(body, options().body("encrypted-video", None).unwrap());
                 let response = if success {
                     json!({"data":{"error_code":0,"item_id":"created-item"}})
                 } else {

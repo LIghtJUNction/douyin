@@ -73,9 +73,27 @@ fn native_login_help_is_available_without_credentials_or_external_tools() {
         "--qr-only",
         "--resume",
         "--poll-once",
+        "--capabilities",
     ] {
         assert!(output.contains(flag), "{flag}");
     }
+    assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn capability_query_never_creates_a_qr_or_claims_activation() {
+    let home = tempfile::tempdir().unwrap();
+    let result = run(home.path(), &["auth", "creator-login", "--capabilities"]);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(value["qrActivationImplemented"], false);
+    assert_eq!(value["networkAccess"], false);
+    assert_eq!(value["readOnly"], true);
+    assert_eq!(value["aiDeclarationParameterVerified"], false);
     assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0);
 }
 

@@ -164,3 +164,69 @@ fn uncertain_receipt_requires_verification_before_loading_auth() {
     assert!(error.contains("--retry-create"), "{error}");
     assert!(!error.contains("OAuth"));
 }
+
+#[test]
+fn unsupported_publish_settings_are_reported_before_files_or_credentials() {
+    let home = tempfile::tempdir().unwrap();
+    for backend in ["video", "app"] {
+        for setting in [vec!["--ai-generated"], vec!["--short-title", "短标题"]] {
+            let mut args = vec![
+                "publish",
+                backend,
+                "missing.mp4",
+                "--title",
+                "AI 文案",
+                "--dry-run",
+            ];
+            args.extend(setting);
+            let out = run(home.path(), &args);
+            assert!(!out.status.success());
+            let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+            assert_eq!(result["stage"], "options_check");
+            assert_eq!(result["uploaded"], false);
+            assert_eq!(result["submitted"], false);
+            assert_eq!(result["settings"]["ai_generated"]["encoded"], false);
+            assert_eq!(result["settings"]["short_title"]["encoded"], false);
+            assert!(!String::from_utf8_lossy(&out.stderr).contains("OAuth 未授权"));
+        }
+    }
+    assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn custom_cover_conflicts_with_frame_cover_and_jpeg_is_checked_before_auth() {
+    let home = tempfile::tempdir().unwrap();
+    let video = home.path().join("video.mp4");
+    let cover = home.path().join("not-a-jpeg.jpg");
+    std::fs::write(&video, b"fixture").unwrap();
+    std::fs::write(&cover, b"not-jpeg").unwrap();
+    let out = run(
+        home.path(),
+        &[
+            "publish",
+            "video",
+            video.to_str().unwrap(),
+            "--cover",
+            cover.to_str().unwrap(),
+            "--dry-run",
+        ],
+    );
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("JPEG"));
+    let out = run(
+        home.path(),
+        &[
+            "publish",
+            "video",
+            "missing",
+            "--cover",
+            "cover.jpg",
+            "--cover-tsp",
+            "1",
+            "--yes",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--cover-tsp"));
+    assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 2);
+}
