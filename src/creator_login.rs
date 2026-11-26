@@ -60,7 +60,11 @@ const UA: &str = concat!(
 );
 
 #[derive(Args)]
+#[command(about = "原生扫码身份验证；当前不能从扫码结果激活投稿会话，先用 --capabilities 查看边界")]
 pub struct CreatorLoginArgs {
+    /// 离线查看真实登录与投稿能力；不生成二维码、不读取凭据、不访问网络
+    #[arg(long, conflicts_with_all = ["qr_only", "poll_once", "resume"])]
+    capabilities: bool,
     /// Maximum time to wait in this invocation, in seconds.
     #[arg(long, default_value_t = 180, value_parser = clap::value_parser!(u64).range(5..=1800))]
     timeout: u64,
@@ -158,9 +162,15 @@ struct LoginFlow {
 }
 
 pub fn run(args: CreatorLoginArgs) -> Result<Value, String> {
+    if args.capabilities {
+        return Ok(capabilities());
+    }
     if !(5..=1800).contains(&args.timeout) || !(5..=60).contains(&args.poll_interval) {
         return Err("creator_login: timeout 必须为 5..1800 秒，poll-interval 为 5..60 秒".into());
     }
+    eprintln!(
+        "当前扫码流程仅核验身份并保存待完成材料，尚不能激活投稿会话；重复扫码不会补齐 Creator 发布材料。可先用 auth creator-login --capabilities 查看可行路径。"
+    );
     let started = Instant::now();
     let total = Duration::from_secs(args.timeout);
     // The sidecar inode is stable. Hold its OS lock across load, validation,
@@ -372,6 +382,7 @@ impl LoginFlow {
             "accountVerified": false,
             "publishReady": false,
             "active": false,
+            "qrActivationImplemented": false,
             "pendingDir": self.directory,
             "resumeArguments": ["auth", "creator-login", "--resume", self.directory.to_string_lossy()],
             "qrUrl": challenge.map(|c| c.index_url.as_str()),
@@ -791,6 +802,21 @@ impl LoginFlow {
         }
         Ok(())
     }
+}
+
+pub(crate) fn capabilities() -> Value {
+    json!({
+        "ok": true, "readOnly": true, "networkAccess": false,
+        "qrActivationImplemented": false,
+        "qrResult": "pending_identity_material_only",
+        "missingImplementation": ["Creator publish material collection", "verified active-session activation"],
+        "routes": [
+            {"command":"auth creator-import FILE", "requires":"legally obtained complete bundle from the same Creator login", "verification":"local binding check, then publish --dry-run verifies live account", "onlineValidated":false},
+            {"command":"auth login --scope user_info,video.create.bind", "requires":"approved OpenAPI application and actual user-granted scope", "publishCommand":"publish video", "separateFromCreatorSession":true}
+        ],
+        "aiDeclarationParameterVerified": false,
+        "nextAction": "缺少完整 Creator 会话包时，使用具备审批权限的官方 OAuth 路线，或由账号所有者在正常 Creator 界面操作；CLI 不能把普通 Cookie 或重复扫码变成完整发布凭据"
+    })
 }
 
 fn sdk_params() -> Vec<(String, String)> {

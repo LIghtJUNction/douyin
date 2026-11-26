@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 
 use crate::publish_journal::Journal;
 use crate::publish_native_client::CreatorClient as Session;
+use crate::publish_options::{Backend, Options};
 
 const MAX_VIDEO_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_RECORD_BYTES: u64 = 64 * 1024;
@@ -41,6 +42,8 @@ pub(crate) struct NativeArgs {
     /// 追加话题文本，可重复；不带空格
     #[arg(long)]
     topic: Vec<String>,
+    #[command(flatten)]
+    options: Options,
     #[arg(long, value_enum, default_value_t = Visibility::Public)]
     visibility: Visibility,
     /// 确认当前创作者账号 ID，必须与服务端身份一致
@@ -75,6 +78,11 @@ pub(crate) fn run(args: NativeArgs) -> Result<Value, String> {
             "投稿需要显式 --yes；只检查请用 --dry-run，仅上传和核对请用 --prepare-only".into(),
         );
     }
+    if args.dry_run
+        && let Some(report) = args.options.blocked_preflight(Backend::Native)
+    {
+        return Ok(report);
+    }
     let title = normalized_title(&args.title, &args.topic)?;
     validate_options(&args)?;
     let media = inspect_media(&args.file).map_err(|e| at("video_check", e))?;
@@ -106,6 +114,7 @@ pub(crate) fn run(args: NativeArgs) -> Result<Value, String> {
         return Ok(json!({
             "ok":true, "dry_run":true, "backend":backend, "account":account,
             "title":title, "visibility":args.visibility.name(),
+            "settings":args.options.report(Backend::Native, None),
             "video":media.summary(), "credentials":readiness, "uploaded":false, "submitted":false
         }));
     }
@@ -113,6 +122,7 @@ pub(crate) fn run(args: NativeArgs) -> Result<Value, String> {
         "kind":"local-publish", "schema":1, "account_id":account_id,
         "video_sha256":media.sha256, "bytes":media.bytes,
         "title":title, "visibility":args.visibility.name(), "backend":backend,
+        "settings":args.options.report(Backend::Native, None),
         "stage":"prepared", "created_at":now()?, "review_status":"not_queried"
     });
     let mut journal =
@@ -381,6 +391,7 @@ fn normalized_title(title: &str, topics: &[String]) -> Result<String, String> {
 }
 
 fn validate_options(args: &NativeArgs) -> Result<(), String> {
+    args.options.validate(Backend::Native)?;
     if args.account.as_deref().is_some_and(|value| {
         value.is_empty() || value.chars().any(|c| c.is_whitespace() || c.is_control())
     }) {

@@ -403,7 +403,7 @@ douyin api request GET /oauth/userinfo/ --param open_id="OPEN_ID"
 
 ## 投稿
 
-原生创作者投稿入口为 `douyin publish app`（别名 `publish native`），由 Rust 直接上传、创建并回查，保留账号与视频摘要的防重复记录。当前本地回归通过，真实账号链路尚未验收；现有 Cookie 的本人身份检查返回状态码 8，原生扫码引导已提供但尚未完成登录与完整投稿材料的验收。已有完整同次创作者会话材料时可使用 `auth creator-import`；仅有普通 Cookie 不足以投稿。用法和准确边界见 [原生创作者投稿](docs/native-publishing.md)。
+原生创作者投稿入口为 `douyin publish app`（别名 `publish native`），由 Rust 直接上传、创建并回查，保留账号与视频摘要的防重复记录。真实账号链路尚未验收。当前原生扫码流程只能保存待完成身份材料，尚无激活完整投稿会话的实现；可先运行 `auth creator-login --capabilities` 离线查看边界。已有完整同次创作者会话材料时可使用 `auth creator-import`；仅有普通 Cookie 不足以投稿。用法和准确边界见 [原生创作者投稿](docs/native-publishing.md)。
 
 以下为独立的官方 OAuth 投稿流程。
 
@@ -424,7 +424,7 @@ douyin publish status ./video-receipt.json
 douyin publish resume ./video-receipt.json --yes
 ```
 
-超过 50 MiB 自动分片，每个上传请求默认超时 300 秒，可用 `--upload-timeout` 修改。支持 `--visibility private|friends|public` 和 `--cover-tsp 2.3`。创建结果未知时先检查创作者中心，再决定是否显式重试；成功创建后进入平台审核。完整命令、恢复阶段和验证范围见 [视频投稿](docs/publishing.md)。
+超过 50 MiB 自动分片，每个上传请求默认超时 300 秒，可用 `--upload-timeout` 修改。支持 `--visibility private|friends|public`，以及互斥的 `--cover-tsp 2.3` 和官方 OAuth `--cover ./cover.jpg`。`--ai-generated` 和 `--short-title` 明确表达用户要求，但当前缺少已验证协议，会在上传前拒绝；不会静默忽略或把文案当作平台标识。创建结果未知时先检查创作者中心，再决定是否显式重试；成功创建后进入平台审核。完整命令、恢复阶段和验证范围见 [视频投稿](docs/publishing.md)。
 
 ## MCP：接入 AI 与自动化工具
 

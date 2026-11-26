@@ -36,6 +36,35 @@ douyin publish video ./video.mp4 --upload-timeout 600 --yes
 
 上传请求默认 300 秒。50 MiB 以内使用单次上传，更大的文件自动分片；默认每片 20 MiB，不足 5 MiB 的尾部并入前一片。文件和分片均流式读取，总文件上限为 4 GiB，额外内存不随整个视频大小增长。任意上传步骤失败都会停止，不自动重试。
 
+## 自定义封面和平台声明
+
+官方 OAuth 后端支持本地 JPG 封面：
+
+```bash
+# 离线检查封面；不上传
+douyin publish video ./video.mp4 --title "作品文案" --cover ./cover.jpg --dry-run
+
+# 上传视频和指定封面，保留回执后停止在创建作品之前
+douyin publish video ./video.mp4 --title "作品文案" --cover ./cover.jpg \
+  --upload-only --receipt ./video-receipt.json --yes
+```
+
+`--cover` 与截帧选项 `--cover-tsp` 互斥。客户端检查 JPEG 起止标记、普通文件和大小，生成私有快照并保存该快照的 SHA-256。标记检查不等于完整图片解码；图片是否可接受仍由平台检查。官方文档上限为 300 MB，客户端采用 300,000,000 字节的保守上限，没有额外推定比例或像素要求。
+
+上传使用 `/api/douyin/v1/video/upload_image/`，multipart 字段为 `image`，授权方式与视频上传相同。成功响应的 `data.image.image_id` 写入 `/api/douyin/v1/video/create_video/` 的 `custom_cover_image_url`。这个字段装的是平台图片 ID，不是本地路径或任意图片 URL。上述映射依据下方官方文档。
+
+回执保存封面摘要、字节数和图片 ID。`publish resume` 使用已保存的 ID，不重新读取或上传本地封面；缺少图片 ID 时停止，不改用视频默认封面。封面上传结果丢失会留下 `cover_uploading`，命令不会自动重传或创建作品。
+
+| 选项 | 官方 OAuth | 原生 Creator |
+| --- | --- | --- |
+| `--cover FILE.jpg` | 上传图片 ID 并写入创建请求 | 缺少已验证的图片上传协议，上传前拒绝 |
+| `--ai-generated` | 缺少已验证的平台声明参数，上传前拒绝 | 同左 |
+| `--short-title TEXT` | 缺少已验证的独立短标题参数，上传前拒绝 | 现有请求只有空 `item_title` 的依据；非空协议未验证，上传前拒绝 |
+
+`--ai-generated` 表示要求平台的 AI 声明功能。它不会把“AI 生成”几个字追加到文案后便报告打标成功。2026-11-23 核对的公开接口文档没有列出该声明字段；这表示当前 CLI 缺少可靠实现依据，不表示平台所有接口都没有此能力。需要平台标识的作品应在已登录的正常 Creator 界面完成对应设置，直至 CLI 获得可核验的协议支持。
+
+预检、上传准备和回执中的 `settings` 分别列出选项是否请求、当前后端是否支持、是否进入已准备的创建参数。`encoded: true` 只说明请求参数包含该设置；`platform_verified` 保持 `false`，不能据此宣称作品上线或平台已应用该标识。存在不支持的请求时，`--dry-run` 输出 `stage: options_check` 和原因，然后以非零状态退出；尚未读取凭据、上传或创建作品。
+
 ## 继续已经上传的投稿
 
 每次真实投稿都会创建私有的本地 JSON 记录，默认位于配置目录的 `publish/` 下。记录包含视频标识、所属 OAuth 应用与账号、标题、可见性及当前阶段，不保存 access token、refresh token 或 client secret。命令会在标准错误输出中显示记录路径。
@@ -57,6 +86,7 @@ douyin publish resume ./video-receipt.json --yes
 | 阶段 | 含义 | 下一步 |
 | --- | --- | --- |
 | `uploading` | 文件还未完整上传 | 重新运行 `publish video` |
+| `cover_uploading` | 视频已上传，封面上传结果尚未完整保存 | 保留回执并核实；不自动重传、不省略封面创建 |
 | `uploaded` | 已取得视频标识，尚未创建作品 | `publish resume --yes` |
 | `creating` | 创建请求已经准备发送或正在处理 | 先检查创作者中心 |
 | `unknown` | 创建请求返回错误或结果不完整 | 先检查创作者中心 |
@@ -89,3 +119,4 @@ cargo fmt --all -- --check
 - [分片上传](https://developer.open-douyin.com/docs/resource/zh-CN/dop/develop/openapi/video-management/douyin/create-video/video-part-upload)
 - [分片上传完成](https://developer.open-douyin.com/docs/resource/zh-CN/dop/develop/openapi/video-management/douyin/create-video/video-part-upload-complete)
 - [创建视频](https://developer.open-douyin.com/docs/resource/zh-CN/dop/develop/openapi/video-management/douyin/create-video/video-create)
+- [图片上传](https://developer.open-douyin.com/docs/resource/zh-CN/dop/develop/openapi/video-management/douyin/create-image-text/image-upload)

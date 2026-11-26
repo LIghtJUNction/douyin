@@ -3,6 +3,31 @@ use std::process::{Command, Output};
 
 const MISSING_FILE: &str = "private-missing-native-publish-source.mp4";
 
+#[test]
+fn unsupported_native_settings_stop_even_prepare_only_before_media_or_auth() {
+    let home = tempfile::tempdir().unwrap();
+    for setting in [
+        vec!["--cover", "cover.jpg"],
+        vec!["--ai-generated"],
+        vec!["--short-title", "短标题"],
+    ] {
+        let mut args = vec![
+            "publish",
+            "native",
+            MISSING_FILE,
+            "--title",
+            "AI 文案",
+            "--prepare-only",
+        ];
+        args.extend(setting);
+        let out = run(home.path(), &args);
+        let error = failure(&out);
+        assert!(error.contains("options_check"), "{error}");
+        assert!(!error.contains("ffprobe"));
+        unchanged(home.path());
+    }
+}
+
 fn command(home: &Path, args: &[&str]) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_douyin"));
     command
